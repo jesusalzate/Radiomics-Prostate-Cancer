@@ -7,6 +7,7 @@ import argparse
 import ast
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import matplotlib as mpl
@@ -37,6 +38,8 @@ from sklearn.metrics import (
 from scipy.stats import wilcoxon
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 try:
     import scienceplots  # noqa: F401

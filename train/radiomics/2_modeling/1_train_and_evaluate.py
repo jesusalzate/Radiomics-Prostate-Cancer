@@ -489,6 +489,26 @@ def get_param_distributions():
     return distributions
 
 
+def make_tuning_safe_estimator(model, search_parallelism: int):
+    """Prevent nested parallelism from exhausting memory during RandomizedSearchCV."""
+
+    tuned_model = clone(model)
+    if search_parallelism == 1:
+        return tuned_model
+
+    safe_param_updates = {}
+    for param_name, param_value in tuned_model.get_params(deep=True).items():
+        normalized_name = param_name.lower()
+        if normalized_name.endswith("n_jobs") and isinstance(param_value, int) and param_value != 1:
+            safe_param_updates[param_name] = 1
+        if normalized_name.endswith("num_threads") and isinstance(param_value, int) and param_value != 1:
+            safe_param_updates[param_name] = 1
+
+    if safe_param_updates:
+        tuned_model.set_params(**safe_param_updates)
+    return tuned_model
+
+
 def build_split_definitions_from_grouped_cv(
     X: pd.DataFrame,
     y: np.ndarray,
@@ -682,6 +702,7 @@ def evaluate_model(
     tune_n_iter: int = 20,
     tune_inner_splits: int = 3,
     tune_random_state: int = 42,
+    tune_search_n_jobs: int = 1,
 ):
     """Run grouped repeated cross-validation over a precomputed fold plan."""
 
@@ -717,20 +738,33 @@ def evaluate_model(
             inner_groups = patient_ids[train_idx]
             n_unique_inner_groups = int(len(np.unique(inner_groups)))
             effective_inner_splits = max(2, min(tune_inner_splits, n_unique_inner_groups))
+            search_estimator = make_tuning_safe_estimator(
+                model=model,
+                search_parallelism=tune_search_n_jobs,
+            )
             search = RandomizedSearchCV(
-                estimator=clone(model),
+                estimator=search_estimator,
                 param_distributions=param_distributions,
                 n_iter=tune_n_iter,
                 scoring="roc_auc",
                 cv=GroupKFold(n_splits=effective_inner_splits),
-                n_jobs=-1,
+                n_jobs=tune_search_n_jobs,
                 random_state=tune_random_state,
                 refit=True,
                 error_score=np.nan,
             )
+            log_progress(
+                f"{classifier_name} | Fold {global_fold_index}/{total_folds} | "
+                f"nested tuning with inner_splits={effective_inner_splits}, "
+                f"search_n_jobs={tune_search_n_jobs}"
+            )
             search.fit(X_train, y_train, groups=inner_groups)
             fold_model = search.best_estimator_
             fold_best_params = search.best_params_
+            log_progress(
+                f"{classifier_name} | Fold {global_fold_index}/{total_folds} | "
+                f"best_params={fold_best_params}"
+            )
         else:
             fold_model = clone(model)
             fold_model.fit(X_train, y_train)
@@ -1427,6 +1461,15 @@ def main():
         help="Number of inner GroupKFold splits for the nested tuning CV.",
     )
     parser.add_argument(
+        "--tune_search_n_jobs",
+        type=int,
+        default=1,
+        help=(
+            "Parallel workers used by RandomizedSearchCV during nested tuning. "
+            "Use 1 to avoid nested parallelism and memory saturation, especially with LightGBM."
+        ),
+    )
+    parser.add_argument(
         "--bootstrap_iterations",
         type=int,
         default=1000,
@@ -1886,7 +1929,8 @@ def main():
         if args.tune:
             log_progress(
                 f"Nested tuning enabled: n_iter={args.tune_n_iter}, "
-                f"inner_splits={args.tune_inner_splits}, scoring=roc_auc, groups=patient_id"
+                f"inner_splits={args.tune_inner_splits}, search_n_jobs={args.tune_search_n_jobs}, "
+                "scoring=roc_auc, groups=patient_id"
             )
 
         if resume_state_path.exists() and not args.ignore_resume_state:
@@ -1935,6 +1979,7 @@ def main():
                 tune_n_iter=args.tune_n_iter,
                 tune_inner_splits=args.tune_inner_splits,
                 tune_random_state=DEFAULT_BASE_RANDOM_STATE,
+                tune_search_n_jobs=args.tune_search_n_jobs,
             )
 
             for fold_metrics_row in fold_metrics:

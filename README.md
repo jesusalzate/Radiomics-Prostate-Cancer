@@ -1,242 +1,83 @@
-# Prostate Cancer Classification with AI and mpMRI
+# Prostate Radiomics ML
 
-This repository contains the code and artefacts used in an ongoing doctoral research line on clinically significant prostate cancer (`csPCa`) classification from multi-parametric MRI (mpMRI). The project compares classical radiomics pipelines against deep learning models and places special emphasis on reproducibility, grouped evaluation by patient, and interpretability.
+Repositorio enfocado solo en radiómica de cáncer de próstata. Conserva el flujo de extracción de características radiómicas desde RM multiparamétrica, el modelado clásico de machine learning y un modelo de deep learning tabular que aprende sobre las características radiómicas ya extraídas.
 
-## Clinical Target
+No contiene entrenamiento de redes sobre imágenes, cortes, volúmenes, parches, CNNs, ViTs de imagen ni explicabilidad de modelos de imagen.
 
-The binary target is `csPCa`, defined here as ISUP grade group `>= 2`.
+## Objetivo clínico
 
-The current pipeline works with three axial MRI sequences:
+La tarea principal es clasificar cáncer de próstata clínicamente significativo (`csPCa`), definido como `ISUP >= 2`, a partir de características radiómicas extraídas de:
 
-- T2-weighted (`T2W`)
-- Apparent diffusion coefficient (`ADC`)
-- High b-value diffusion-weighted imaging (`DWI` / `HBV`)
+- `T2W`
+- `ADC`
+- `DWI/HBV`
 
-## Repository Structure
+La etiqueta binaria esperada en las tablas de modelado es `label`:
+
+- `0`: no clínicamente significativo
+- `1`: clínicamente significativo
+
+## Estructura
 
 ```text
 ├── artifacts/
-│   ├── data.csv                     # Cohort table with image paths, labels, and metadata
-│   └── radiomics/                  # Extracted modality-specific radiomics CSV files
-├── data_analysis/                  # Exploratory notebooks and descriptive analyses
-├── data_structuring/               # Notebook used to assemble the cohort CSV
-├── results/                        # Model outputs, comparisons, hold-out evaluation, plots
+│   ├── data.csv                         # Cohorte con rutas, metadatos y etiqueta
+│   └── radiomics/                       # CSVs de características radiómicas por modalidad
+├── data_analysis/                       # Notebooks descriptivos de cohorte e imágenes
+├── data_structuring/                    # Ensamblaje inicial de la tabla de cohorte
+├── results/
+│   └── radiomics/                       # Resultados de modelos radiómicos
 ├── train/
-│   ├── common/                     # Shared utilities for reproducibility and radiomics helpers
-│   ├── compare_approaches/         # Radiomics vs deep learning comparison scripts
-│   ├── deep_learning/
+│   ├── common/                          # Utilidades compartidas
 │   └── radiomics/
-├── z_figures/
-└── z_report/
+│       ├── 1_extract_radiomics/         # PyRadiomics y parámetros por modalidad
+│       └── 2_modeling/                  # ML clásico, comparación y Transformer tabular
+├── requirements.txt                     # Pipeline base: extracción + ML clásico
+└── requirements-deep-radiomics.txt      # Opcional: deep learning tabular con TensorFlow
 ```
 
-## End-to-End Workflow
+## Datos conservados
 
-### 1. Assemble the cohort table
+El repositorio mantiene los datos necesarios para reproducir el flujo radiómico:
 
-The project starts from `artifacts/data.csv`, which contains:
+- `artifacts/data.csv`
+- `artifacts/radiomics/features_t2_gland.csv`
+- `artifacts/radiomics/features_adc_gland.csv`
+- `artifacts/radiomics/features_dwi_gland.csv`
+- `artifacts/radiomics/features_t2_full.csv`
+- `artifacts/radiomics/features_adc_full.csv`
+- `artifacts/radiomics/features_dwi_full.csv`
+- resultados existentes bajo `results/radiomics/`
 
-- patient and study identifiers
-- binary label (`case_csPCa`)
-- paths to the three MRI sequences
-- whole-gland segmentation path
-- additional clinical and image metadata
+Los artefactos de deep learning sobre imagen fueron eliminados.
 
-This table is created from the notebooks in `data_structuring/`.
+## Instalación
 
-### 2. Extract modality-specific radiomics
+Pipeline base:
 
-Script: `train/radiomics/1_extract_radiomics/extract_radiomics.py`
+```bash
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
 
-For each case and for each modality (`T2W`, `ADC`, `DWI`), the script:
+Modelo tabular de deep learning sobre radiómica:
 
-1. Loads the MRI volume.
-2. Applies preprocessing:
-   - float32 conversion
-   - N4 bias-field correction
-   - curvature anisotropic diffusion denoising
-3. Uses the whole-gland mask for the gland-focused analysis.
-4. Builds an all-ones mask for the full-volume analysis.
-5. Runs PyRadiomics with a modality-specific YAML configuration.
+```bash
+pip install -r requirements-deep-radiomics.txt
+```
 
-This produces six CSV files in `artifacts/radiomics/`:
+## Flujo principal
 
-- `features_t2_gland.csv`
-- `features_adc_gland.csv`
-- `features_dwi_gland.csv`
-- `features_t2_full.csv`
-- `features_adc_full.csv`
-- `features_dwi_full.csv`
+### 1. Extraer características radiómicas
 
-### 3. Build the concatenated modeling table
+```bash
+python train/radiomics/1_extract_radiomics/extract_radiomics.py
+```
 
-Script: `train/radiomics/2_modeling/0_build_concatenated_feature_table.py`
+Genera un CSV por modalidad y región (`gland` y `full`) dentro de `artifacts/radiomics/`.
 
-The six modality-specific CSV files are merged into a single modeling table for each spatial setting:
-
-- `features_all_gland.csv`
-- `features_all_full.csv`
-
-Important implementation details:
-
-- rows are matched using `patient_id`, `study_id`, and `label`
-- feature names are prefixed by modality (`t2_`, `adc_`, `dwi_`)
-- shape features are retained from only one reference modality to avoid redundant duplicates
-- a unique `sample_id = patient_id + "_" + study_id` is created
-
-### 4. Run repeated grouped cross-validation
-
-Script: `train/radiomics/2_modeling/1_train_and_evaluate.py`
-
-This is the main radiomics benchmarking script. It evaluates six classical classifiers:
-
-- SVM
-- Logistic Regression
-- Random Forest
-- Naive Bayes
-- KNN
-- Gradient Boosting
-
-The evaluation protocol is:
-
-- grouped by `patient_id`, so studies from the same patient do not leak across train and validation
-- stratified at the group level
-- repeated `5-fold x 10 repeats` by default, which yields `50` validation folds per classifier
-
-The script first precomputes the grouped split plan once and then reuses that same fold plan across all classifiers so that the comparison is fair.
-
-### 5. Leakage-safe feature selection inside each fold
-
-When `--feature_strategy most_discriminant` is used, feature selection is performed inside each training fold only. The validation fold is never used to choose features.
-
-This is the most important part of the radiomics pipeline:
-
-1. Start from the numeric radiomics matrix only.
-   - metadata columns such as `patient_id`, `study_id`, `label`, `sample_id`, and PyRadiomics `diagnostics_*` columns are removed
-2. Work only with the training partition of the current fold.
-3. Score each feature independently on that training data:
-   - invalid or near-constant features are skipped
-   - a normality check is attempted
-   - if the feature looks Gaussian, a two-sample `t-test` is used
-   - otherwise, a `Mann-Whitney U` test is used
-   - a univariate ROC AUC is also computed for ranking
-   - the best single-feature threshold is estimated with the Youden index
-4. Apply false discovery rate control.
-   - Benjamini-Hochberg correction is used
-   - features with `q <= fdr_alpha` form the preferred candidate pool
-   - if none survive FDR, the script falls back to the valid ranked features
-5. Infer how many features can be kept in that fold.
-   - this is not fixed blindly
-   - the cap depends on training sample size and minority-class size
-   - the goal is to keep the subset conservative relative to the available data
-6. Prune redundancy by correlation.
-   - candidate features are sorted by univariate relevance
-   - then a greedy pruning step removes features whose absolute Pearson correlation with a previously kept feature is above the threshold
-7. Keep the top pruned features up to the inferred cap.
-8. Train the classifier on the selected subset and evaluate on the untouched validation fold.
-
-Because this process runs fold by fold, the selected feature subset can change from one fold to another. That is expected and is actually the correct leakage-safe behaviour.
-
-## What Happens After the `5 x 10` Training?
-
-The repeated cross-validation stage does not stop at reporting 50 numbers per model. The script performs several post-processing steps.
-
-### Fold-level outputs
-
-For every classifier and every fold, the pipeline stores:
-
-- train and validation metrics
-- the selected feature subset used in that fold
-- validation labels, predictions, and probabilities
-
-### Flat out-of-fold predictions
-
-The fold predictions are expanded into a one-row-per-case table:
-
-- classifier
-- fold and repeat
-- sample, patient, and study identifiers
-- true label
-- predicted label
-- probability of class 1
-- selected features for that fold
-
-### Aggregated out-of-fold predictions
-
-Since the cross-validation is repeated 10 times, the same case appears in validation more than once. The script therefore aggregates repeated out-of-fold predictions by averaging the predicted probability for each case and classifier across all its validation appearances.
-
-After that, it:
-
-- applies the classification threshold, default `0.5`
-- generates one aggregated prediction per case and classifier
-- computes patient-level performance summaries
-
-### Bootstrap confidence intervals
-
-Using the aggregated out-of-fold predictions, the script performs stratified bootstrap resampling at the patient level to estimate confidence intervals for:
-
-- AUC
-- accuracy
-- balanced accuracy
-- F1
-- MCC
-- kappa
-- sensitivity
-- specificity
-- PPV
-- NPV
-
-It also exports ROC curves with confidence bands.
-
-### Statistical comparison between classifiers
-
-If `--calculate_differences` is enabled, the script runs `train/radiomics/2_modeling/2_model_differences.py`, which:
-
-- compares classifiers using the fold-wise metric distributions
-- applies a Friedman global test
-- if significant, runs pairwise Wilcoxon signed-rank tests with Holm correction
-
-This produces the model-ranking comparison used to justify which classifier should move forward to the final optimization stage.
-
-## Final Hold-Out Optimization of the Best Classifier
-
-Script: `train/radiomics/2_modeling/3_retrain_best_model_and_evaluate.py`
-
-If `--fine_tune_best_model` is enabled, the best classifier according to median validation AUC is retrained in a separate final stage.
-
-The logic is:
-
-1. Create a grouped `80/20` train/test split with `GroupShuffleSplit`.
-2. Run feature selection again using only the training split.
-3. Restrict both train and test to that training-derived feature subset.
-4. Optimize the selected classifier with `BayesSearchCV` using grouped cross-validation inside the training split.
-5. Save the best estimator.
-6. Evaluate the uncalibrated model on the hold-out test split.
-7. Estimate test confidence intervals by patient-level bootstrap.
-8. Calibrate predicted probabilities with Platt scaling (`CalibratedClassifierCV`, sigmoid).
-9. Re-evaluate the calibrated model.
-10. Sweep decision thresholds and report the threshold with the best F1.
-11. Run SHAP and LIME analyses on both the training split and the hold-out test split.
-
-This final stage produces the model intended for deeper interpretation and a more realistic final evaluation than the repeated cross-validation benchmark alone.
-
-## Reproducibility Notes
-
-Current reliability-oriented implementation choices include:
-
-- grouped splitting by patient
-- fold-wise feature selection to avoid leakage
-- shared fold plans across classifiers for fair comparison
-- exported selected features per fold
-- aggregated out-of-fold predictions at the case level
-- bootstrap confidence intervals at the patient level
-- project-root-based path resolution instead of fragile relative paths
-
-One methodological caution is worth noting: in the current final hold-out script, the threshold sweep is performed on the hold-out test set itself. That is useful for exploratory analysis, but if the threshold is meant to be locked for a final unbiased evaluation, it should be chosen on a separate validation layer inside training instead of on the test split.
-
-## Typical Commands
-
-### Build the concatenated radiomics table
+### 2. Concatenar modalidades
 
 ```bash
 python train/radiomics/2_modeling/0_build_concatenated_feature_table.py \
@@ -246,7 +87,7 @@ python train/radiomics/2_modeling/0_build_concatenated_feature_table.py \
   --output artifacts/radiomics/concatenated_data/features_all_gland.csv
 ```
 
-### Run the main radiomics benchmark
+### 3. Entrenar y evaluar modelos clásicos
 
 ```bash
 python train/radiomics/2_modeling/1_train_and_evaluate.py \
@@ -272,23 +113,40 @@ python train/radiomics/2_modeling/1_train_and_evaluate.py \
   --fine_tune_best_model
 ```
 
-### Run the final hold-out optimization directly
+### 4. Entrenar Transformer tabular sobre radiómica
+
+Este modelo usa solo la matriz de características radiómicas. La selección de variables, imputación y escalado se ajustan únicamente con train para evitar leakage.
 
 ```bash
-python train/radiomics/2_modeling/3_retrain_best_model_and_evaluate.py \
-  --csv artifacts/radiomics/concatenated_data/features_all_gland.csv \
-  --model LogisticRegression \
-  --feature_strategy most_discriminant \
-  --bootstrap_iterations 1000 \
-  --ci_level 0.95
+python train/radiomics/2_modeling/4_train_tabular_transformer.py \
+  --csv features_all_gland.csv \
+  --data_pre artifacts/radiomics \
+  --output_dir results/radiomics/deep_tabular_transformer \
+  --run_name gland_transformer \
+  --feature_selection most_discriminant \
+  --epochs 300 \
+  --batch_size 16 \
+  --patience 50
 ```
 
-## Related Modules
+Si ya tienes particiones externas con columna `patient_id`, puedes fijarlas:
 
-- `train/radiomics/README.md`: radiomics-specific methodology in more detail
-- `train/deep_learning/README.md`: deep learning branch
-- `train/compare_approaches/`: direct radiomics vs deep learning comparison scripts
+```bash
+python train/radiomics/2_modeling/4_train_tabular_transformer.py \
+  --csv features_all_gland.csv \
+  --train_ids_csv splits/train_df.csv \
+  --val_ids_csv splits/val_df.csv \
+  --test_ids_csv splits/test_df.csv
+```
 
-## Reference
+## Garantías metodológicas
 
-[1] A. Saha, J. S. Bosma, J. J. Twilt, B. van Ginneken, A. Bjartell, A. R. Padhani, D. Bonekamp, G. Villeirs, G. Salomon, G. Giannarini, J. Kalpathy-Cramer, J. Barentsz, K. H. Maier-Hein, M. Rusu, O. Rouvière, R. van den Bergh, V. Panebianco, V. Kasivisvanathan, N. A. Obuchowski, D. Yakar, M. Elschot, J. Veltman, J. J. Fütterer, M. de Rooij, H. Huisman, and the PI-CAI consortium. “Artificial Intelligence and Radiologists in Prostate Cancer Detection on MRI (PI-CAI): An International, Paired, Non-Inferiority, Confirmatory Study”. *The Lancet Oncology* 2024; 25(7): 879-887.
+- Separación por `patient_id` para reducir leakage entre estudios del mismo paciente.
+- Selección de características dentro de cada fold o split de entrenamiento.
+- Imputación y escalado ajustados solo con train.
+- Comparación clásica con folds compartidos entre clasificadores.
+- Deep learning permitido solo como modelo tabular sobre variables radiómicas.
+
+## Documentación adicional
+
+La metodología detallada está en [`train/radiomics/README.md`](train/radiomics/README.md).

@@ -17,16 +17,12 @@ env/
 Thumbs.db
 
 # Generated experiment artefacts
-artifacts/deep_learning/**/models/
-artifacts/deep_learning/**/logs/
-artifacts/deep_learning/**/results/
-artifacts/deep_learning/**/metadata/
-artifacts/deep_learning/**/splits/
 artifacts/radiomics/concatenated_data/
 results/radiomics/shared_cache/
 results/**/explicability/
 results/**/SHAP/
 results/**/LIME/
+results/radiomics/deep_tabular_transformer/
 # Heavy radiomics outputs
 results/**/feature_selection/selected_features_by_fold.csv
 results/**/oof_predictions_flat_*.csv
@@ -41,3 +37,4 @@ results/**/LIME/
 *.pt
 *.pkl
 *.joblib
+*.keras

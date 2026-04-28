@@ -1,6 +1,6 @@
 # Flujo de trabajo de radiómica
 
-Esta carpeta contiene la rama de radiómica del proyecto. El objetivo es clasificar cáncer de próstata clínicamente significativo (`csPCa`) a partir de RM multiparamétrica (`T2W`, `ADC`, `DWI/HBV`) usando características radiómicas y modelos clásicos de aprendizaje automático.
+Esta carpeta contiene la rama de radiómica del proyecto. El objetivo es clasificar cáncer de próstata clínicamente significativo (`csPCa`) a partir de RM multiparamétrica (`T2W`, `ADC`, `DWI/HBV`) usando características radiómicas, modelos clásicos de aprendizaje automático y modelos de deep learning tabular entrenados exclusivamente sobre dichas características.
 
 La etiqueta binaria objetivo es:
 
@@ -20,7 +20,8 @@ La etiqueta binaria objetivo es:
     ├── 1_train_and_evaluate.py
     ├── 2_model_differences.py
     ├── 2a_gland_vs_full_differences.py
-    └── 3_retrain_best_model_and_evaluate.py
+    ├── 3_retrain_best_model_and_evaluate.py
+    └── 4_train_tabular_transformer.py
 ```
 
 ## Paso a paso del pipeline
@@ -244,6 +245,34 @@ La validación cruzada repetida sirve para comparar modelos de manera robusta. E
 - refinar el mejor clasificador
 - obtener una evaluación final separada
 - producir un modelo interpretable y exportable
+
+## 7. Transformer tabular sobre radiómica
+
+Script: [`2_modeling/4_train_tabular_transformer.py`](./2_modeling/4_train_tabular_transformer.py)
+
+Este script incorpora deep learning, pero solo después de la extracción radiómica. El modelo recibe una fila tabular por estudio y no accede a imágenes, volúmenes ni tensores de RM.
+
+El flujo es:
+
+1. Cargar la tabla concatenada de características.
+2. Separar train, validación y test por `patient_id`.
+3. Hacer selección de características solo con train si se usa `--feature_selection most_discriminant`.
+4. Ajustar imputador y escalador solo con train.
+5. Entrenar una red densa que proyecta las características a tokens.
+6. Aplicar bloques Transformer con embeddings posicionales aprendidos y pooling por atención.
+7. Seleccionar el umbral de decisión en validación.
+8. Evaluar en test y guardar métricas, predicciones, curvas y modelo `.keras`.
+
+Ejemplo:
+
+```bash
+python train/radiomics/2_modeling/4_train_tabular_transformer.py \
+  --csv features_all_gland.csv \
+  --data_pre artifacts/radiomics \
+  --output_dir results/radiomics/deep_tabular_transformer \
+  --run_name gland_transformer \
+  --feature_selection most_discriminant
+```
 
 ## Salidas principales
 

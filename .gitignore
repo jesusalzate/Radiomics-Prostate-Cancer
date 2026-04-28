@@ -30,7 +30,7 @@ results/radiomics/shared_cache/
 results/**/explicability/
 results/**/SHAP/
 results/**/LIME/
-
+artifacts/radiomics/features_all_gland.csv
 
 # Large model and report files
 *.pth
@@ -38,3 +38,8 @@ results/**/LIME/
 *.pkl
 *.joblib
 *.keras
+<<<<<<< HEAD
+*.out
+=======
+artifacts/
+*.outresults/

@@ -128,6 +128,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--top_features", type=int, default=20)
     parser.add_argument("--max_native_samples", type=int, default=200)
     parser.add_argument("--ig_steps", type=int, default=64)
+    parser.add_argument(
+        "--reuse_existing_interpretability",
+        action="store_true",
+        help="Skip a model if its per-model interpretability outputs already exist on disk.",
+    )
     return parser.parse_args()
 
 
@@ -373,20 +378,42 @@ def compare_models_foldwise(fold_metrics_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def plot_metric_by_fold(fold_metrics_df: pd.DataFrame, metric_name: str, output_path: Path) -> None:
-    fig, ax = plt.subplots(figsize=(9, 5))
-    for model_name, model_df in fold_metrics_df.groupby("model_name"):
-        sorted_df = model_df.sort_values("fold_index")
-        ax.plot(
-            sorted_df["fold_index"],
-            sorted_df[metric_name],
-            marker="o",
-            linewidth=2,
-            label=model_name,
-        )
+    plot_df = fold_metrics_df[["model_name", "fold_index", metric_name]].copy()
+    plot_df["fold_label"] = plot_df["fold_index"].apply(lambda value: f"Fold {int(value)}")
+    fig_width = max(9, 1.5 * plot_df["fold_index"].nunique())
+    fig, ax = plt.subplots(figsize=(fig_width, 5.5))
+    sns.barplot(
+        data=plot_df,
+        x="fold_label",
+        y=metric_name,
+        hue="model_name",
+        ax=ax,
+        palette="colorblind",
+        errorbar=None,
+    )
     ax.set_xlabel("Fold")
     ax.set_ylabel(metric_name.replace("_", " ").title())
     ax.set_title(f"{metric_name.replace('_', ' ').title()} by Fold")
-    ax.legend(loc="best", fontsize=8)
+    ax.legend(loc="best", fontsize=8, title="Model")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_pooled_metric_bars(pooled_metrics_df: pd.DataFrame, metric_name: str, output_path: Path) -> None:
+    plot_df = pooled_metrics_df[["model_name", metric_name]].copy().sort_values(metric_name, ascending=False)
+    fig, ax = plt.subplots(figsize=(8, max(4, 0.45 * len(plot_df))))
+    sns.barplot(
+        data=plot_df,
+        x=metric_name,
+        y="model_name",
+        orient="h",
+        ax=ax,
+        palette="colorblind",
+    )
+    ax.set_xlabel(metric_name.replace("_", " ").title())
+    ax.set_ylabel("Model")
+    ax.set_title(f"Pooled {metric_name.replace('_', ' ').title()} Comparison")
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -755,6 +782,78 @@ def plot_top_feature_overlap(
     plt.close(fig)
 
 
+def save_model_interpretability_outputs(
+    *,
+    model_name: str,
+    model_family: str,
+    permutation_records: list[dict],
+    native_records: list[dict],
+    permutation_dir: Path,
+    native_dir: Path,
+    top_features: int,
+) -> None:
+    model_slug = make_safe_slug(model_name)
+    model_perm_dir = permutation_dir / model_slug
+    model_native_dir = native_dir / model_slug
+    model_perm_dir.mkdir(parents=True, exist_ok=True)
+    model_native_dir.mkdir(parents=True, exist_ok=True)
+
+    if permutation_records:
+        permutation_df = pd.DataFrame(permutation_records).sort_values(["fold_index", "mean_auc_drop"], ascending=[True, False])
+        permutation_df.to_csv(model_perm_dir / "permutation_importance_by_fold.csv", index=False)
+        global_permutation_df = (
+            permutation_df.groupby(["model_name", "model_family", "feature"], as_index=False)
+            .agg(
+                importance=("mean_auc_drop", "mean"),
+                mean_ap_drop=("mean_ap_drop", "mean"),
+                n_folds=("fold_index", "nunique"),
+            )
+            .sort_values("importance", ascending=False)
+        )
+        global_permutation_df.to_csv(model_perm_dir / "global_permutation_importance.csv", index=False)
+        plot_top_feature_bars(
+            global_permutation_df,
+            title=f"{model_name} | Global Permutation Importance (AUROC drop)",
+            output_path=model_perm_dir / "permutation_top_features.png",
+            value_column="importance",
+            top_k=top_features,
+        )
+
+    if native_records:
+        native_df = pd.DataFrame(native_records).sort_values(["fold_index", "importance"], ascending=[True, False])
+        native_df.to_csv(model_native_dir / "native_importance_by_fold.csv", index=False)
+        global_native_df = (
+            native_df.groupby(["model_name", "model_family", "feature", "method"], as_index=False)
+            .agg(
+                importance=("importance", "mean"),
+                n_folds=("fold_index", "nunique"),
+            )
+            .sort_values("importance", ascending=False)
+        )
+        global_native_df.to_csv(model_native_dir / "global_native_importance.csv", index=False)
+        method_name = global_native_df["method"].iloc[0]
+        plot_top_feature_bars(
+            global_native_df,
+            title=f"{model_name} | Global {method_name.replace('_', ' ').title()} Importance",
+            output_path=model_native_dir / f"{method_name}_top_features.png",
+            value_column="importance",
+            top_k=top_features,
+        )
+
+
+def model_interpretability_ready(
+    *,
+    model_name: str,
+    permutation_dir: Path,
+    native_dir: Path,
+) -> bool:
+    model_slug = make_safe_slug(model_name)
+    return (
+        (permutation_dir / model_slug / "global_permutation_importance.csv").exists()
+        and (native_dir / model_slug / "global_native_importance.csv").exists()
+    )
+
+
 def fit_ml_model_for_fold(
     *,
     ml_module,
@@ -906,6 +1005,7 @@ def main() -> None:
 
     for metric_name in ["auroc", "ap", "picai_score", "accuracy", "balanced_accuracy", "f1", "mcc", "sensitivity", "specificity", "ppv", "npv", "log_loss"]:
         plot_metric_by_fold(fold_metrics_df, metric_name, curves_dir / f"{metric_name}_by_fold.png")
+        plot_pooled_metric_bars(pooled_metrics_df, metric_name, curves_dir / f"{metric_name}_pooled_bar.png")
 
     plot_pooled_curves(pooled_predictions_df, curve_type="roc", output_path=curves_dir / "pooled_roc_comparison.png")
     plot_pooled_curves(pooled_predictions_df, curve_type="pr", output_path=curves_dir / "pooled_pr_comparison.png")
@@ -949,7 +1049,16 @@ def main() -> None:
 
     # ML interpretability
     for classifier_name in selected_ml_classifiers:
+        if args.reuse_existing_interpretability and model_interpretability_ready(
+            model_name=classifier_name,
+            permutation_dir=permutation_dir,
+            native_dir=native_dir,
+        ):
+            log_progress(f"Interpretability | ML | {classifier_name} | already available on disk, skipping")
+            continue
         log_progress(f"Interpretability | ML | {classifier_name}")
+        model_permutation_records = []
+        model_native_records = []
         classifier_results = ml_results_df[ml_results_df["Classifier"] == classifier_name].copy()
         for split_definition in split_definitions:
             fold_index = int(split_definition["fold_index"])
@@ -997,6 +1106,7 @@ def main() -> None:
             fold_perm_df["model_family"] = "ml"
             fold_perm_df["fold_index"] = fold_index
             permutation_rows.extend(fold_perm_df.to_dict(orient="records"))
+            model_permutation_records.extend(fold_perm_df.to_dict(orient="records"))
 
             fold_native_df = extract_native_ml_importance(
                 fitted_model=fitted_model,
@@ -1009,6 +1119,19 @@ def main() -> None:
             fold_native_df["model_family"] = "ml"
             fold_native_df["fold_index"] = fold_index
             native_rows.extend(fold_native_df.to_dict(orient="records"))
+            model_native_records.extend(fold_native_df.to_dict(orient="records"))
+
+            save_model_interpretability_outputs(
+                model_name=classifier_name,
+                model_family="ml",
+                permutation_records=model_permutation_records,
+                native_records=model_native_records,
+                permutation_dir=permutation_dir,
+                native_dir=native_dir,
+                top_features=args.top_features,
+            )
+            pd.DataFrame(permutation_rows).to_csv(permutation_dir / "permutation_importance_by_fold.csv", index=False)
+            pd.DataFrame(native_rows).to_csv(native_dir / "native_importance_by_fold.csv", index=False)
 
     # DL interpretability
     if tf is not None:
@@ -1020,7 +1143,16 @@ def main() -> None:
         for model_entry in dl_models:
             model_name = str(model_entry["architecture"])
             run_dir = Path(model_entry["run_dir"]).resolve()
+            if args.reuse_existing_interpretability and model_interpretability_ready(
+                model_name=model_name,
+                permutation_dir=permutation_dir,
+                native_dir=native_dir,
+            ):
+                log_progress(f"Interpretability | DL | {model_name} | already available on disk, skipping")
+                continue
             log_progress(f"Interpretability | DL | {model_name}")
+            model_permutation_records = []
+            model_native_records = []
             for fold_position, split_definition in enumerate(split_definitions, start=1):
                 fold_index = int(split_definition["fold_index"])
                 fold_dir = run_dir / f"fold_{fold_position:02d}"
@@ -1059,6 +1191,7 @@ def main() -> None:
                     model_path,
                     custom_objects=custom_objects,
                     compile=False,
+                    safe_mode=False,
                 )
 
                 def predict_probability_fn(X_frame: pd.DataFrame) -> np.ndarray:
@@ -1077,6 +1210,7 @@ def main() -> None:
                 fold_perm_df["model_family"] = "dl"
                 fold_perm_df["fold_index"] = fold_index
                 permutation_rows.extend(fold_perm_df.to_dict(orient="records"))
+                model_permutation_records.extend(fold_perm_df.to_dict(orient="records"))
 
                 fold_native_df = extract_native_dl_importance(
                     model=loaded_model,
@@ -1089,6 +1223,19 @@ def main() -> None:
                 fold_native_df["model_family"] = "dl"
                 fold_native_df["fold_index"] = fold_index
                 native_rows.extend(fold_native_df.to_dict(orient="records"))
+                model_native_records.extend(fold_native_df.to_dict(orient="records"))
+
+                save_model_interpretability_outputs(
+                    model_name=model_name,
+                    model_family="dl",
+                    permutation_records=model_permutation_records,
+                    native_records=model_native_records,
+                    permutation_dir=permutation_dir,
+                    native_dir=native_dir,
+                    top_features=args.top_features,
+                )
+                pd.DataFrame(permutation_rows).to_csv(permutation_dir / "permutation_importance_by_fold.csv", index=False)
+                pd.DataFrame(native_rows).to_csv(native_dir / "native_importance_by_fold.csv", index=False)
 
     permutation_df = pd.DataFrame(permutation_rows)
     native_df = pd.DataFrame(native_rows)

@@ -155,6 +155,33 @@ En ese modo:
 - cada fold externo rehace la selección de variables usando solo su train fold
 - cada fold externo hace además tuneo anidado de hiperparámetros sobre su propio train fold
 - el resultado sigue siendo una comparación limpia porque la validación externa nunca entra ni en la selección ni en el tuning
+- además, el script exporta `shared_fold_feature_plan.json` con las variables seleccionadas por cada fold externo para que los modelos deep learning reutilicen exactamente esas mismas variables
+
+Si solo quieres preparar esas variables compartidas por fold sin entrenar todavía los modelos clásicos, puedes usar:
+
+```bash
+python train/radiomics/2_modeling/1_train_and_evaluate.py \
+  --csv features_all_gland.csv \
+  --feature_strategy most_discriminant \
+  --experiment_name final_5fold_feature_prep \
+  --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
+  --predefined_fold_id_type sample_id \
+  --min_features 30 \
+  --max_features_cap 100 \
+  --samples_per_feature 15 \
+  --minority_samples_per_feature 5 \
+  --fdr_alpha 0.05 \
+  --correlation_threshold 0.95 \
+  --selection_n_jobs 32 \
+  --prepare_shared_features_only
+```
+
+Eso genera:
+
+- `shared_fold_feature_plan.json`
+- `fold_plan_summary.csv`
+- `shared_feature_selection/shared_selected_features_by_fold.csv`
+- `shared_feature_selection/shared_fold_selected_feature_lists.csv`
 
 Cuando usas `--predefined_folds_json`:
 
@@ -170,6 +197,7 @@ python train/radiomics/2_modeling/4_train_tabular_transformer.py \
   --csv features_all_gland.csv \
   --run_name features_all_gland_transformer_picai5fold \
   --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
+  --shared_feature_folds_json results/radiomics/most_discriminant/gland/final_5fold_top3_tuned/shared_fold_feature_plan.json \
   --predefined_fold_id_type sample_id
 ```
 
@@ -178,7 +206,30 @@ En ese modo:
 - el fold externo actúa como test fold
 - dentro del conjunto de entrenamiento externo se crea una validación interna por grupos
 - esa validación interna se usa solo para early stopping y selección del umbral
+- la selección de características ya no se rehace dentro del script DL si le pasas `--shared_feature_folds_json`
+- se usan exactamente las mismas variables por fold que en el run final de ML
 - el rendimiento final se agrega con predicciones `out-of-fold` sobre los `5` test folds externos
+- además se guarda un log detallado en `training.log` con tamaños de split, origen de las variables, progreso por fold y métricas finales
+
+Si quieres que las métricas dependientes de umbral sean más comparables con el pipeline ML final, puedes forzar un umbral fijo:
+
+```bash
+python train/radiomics/2_modeling/4_run_deep_tabular_suite.py \
+  --csv features_all_gland.csv \
+  --output_dir results/radiomics/deep_tabular_models \
+  --run_prefix final_5fold \
+  --architectures transformer capsnet transformer_capsnet \
+  --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
+  --shared_feature_folds_json results/radiomics/most_discriminant/gland/final_5fold_top3_tuned/shared_fold_feature_plan.json \
+  --predefined_fold_id_type sample_id \
+  --threshold_strategy fixed_0.5
+```
+
+Con eso:
+
+- ML y DL siguen comparándose con las mismas probabilidades `OOF`
+- las métricas umbral-dependientes de DL dejan de usar un umbral propio por fold
+- `AUC` sigue siendo la métrica más limpia para la comparación principal
 
 ## 4. Cómo se hace la selección de características
 
@@ -235,6 +286,7 @@ Si se usa `--feature_strategy most_discriminant`, el código hace esto:
 - El conjunto de variables puede cambiar de un fold a otro.
 - Eso no es un error; es lo esperable cuando la selección se hace correctamente dentro de cada train fold.
 - Como el plan de folds y la selección se calculan una vez y luego se reutilizan en todos los modelos, todos los clasificadores compiten bajo las mismas condiciones.
+- Para la comparación final ML vs DL con folds predefinidos, lo recomendado es reutilizar `shared_fold_feature_plan.json` para que ambas familias de modelos usen exactamente el mismo subconjunto por fold externo.
 
 ### Qué archivos deja la selección de características
 

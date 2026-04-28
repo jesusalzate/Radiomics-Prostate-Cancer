@@ -34,6 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--group_column", default="patient_id")
     parser.add_argument("--feature_selection", choices=["none", "most_discriminant"], default="most_discriminant")
     parser.add_argument("--predefined_folds_json", default=None)
+    parser.add_argument("--shared_feature_folds_json", default=None)
     parser.add_argument(
         "--predefined_fold_id_type",
         choices=["sample_id", "patient_study", "patient_id_study_id", "patient_id", "study_id"],
@@ -52,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--patience", type=int, default=50)
+    parser.add_argument(
+        "--threshold_strategy",
+        choices=["youden_val", "fixed_0.5"],
+        default="youden_val",
+    )
     return parser.parse_args()
 
 
@@ -109,6 +115,8 @@ def main() -> None:
             str(args.epochs),
             "--patience",
             str(args.patience),
+            "--threshold_strategy",
+            args.threshold_strategy,
         ]
         if args.predefined_folds_json:
             command.extend(
@@ -117,6 +125,13 @@ def main() -> None:
                     str(args.predefined_folds_json),
                     "--predefined_fold_id_type",
                     args.predefined_fold_id_type,
+                ]
+            )
+        if args.shared_feature_folds_json:
+            command.extend(
+                [
+                    "--shared_feature_folds_json",
+                    str(args.shared_feature_folds_json),
                 ]
             )
 

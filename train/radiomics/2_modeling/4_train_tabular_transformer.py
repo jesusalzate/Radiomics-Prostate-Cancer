@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import random
 import sys
 from dataclasses import asdict, dataclass
@@ -55,9 +56,14 @@ from train.common.radiomics_utils import (
 )
 from train.common.runtime_utils import (
     load_predefined_folds,
+    load_shared_fold_feature_plan,
     resolve_identifier_array,
     resolve_predefined_folds_to_indices,
+    resolve_shared_features_for_fold,
+    setup_logger,
 )
+
+LOGGER = logging.getLogger("radiomics_dl")
 
 
 @dataclass(frozen=True)
@@ -219,7 +225,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--patience", type=int, default=50)
+    parser.add_argument(
+        "--threshold_strategy",
+        choices=["youden_val", "fixed_0.5"],
+        default="youden_val",
+        help=(
+            "How to convert probabilities into binary predictions. "
+            "'youden_val' chooses the threshold on the inner validation split. "
+            "'fixed_0.5' uses a shared fixed threshold for fairer ML-vs-DL comparisons."
+        ),
+    )
     parser.add_argument("--predefined_folds_json", default=None)
+    parser.add_argument(
+        "--shared_feature_folds_json",
+        default=None,
+        help=(
+            "Optional JSON exported by 1_train_and_evaluate.py containing fold-wise "
+            "selected features to reuse across ML and DL."
+        ),
+    )
     parser.add_argument(
         "--predefined_fold_id_type",
         choices=["sample_id", "patient_study", "patient_id_study_id", "patient_id", "study_id"],
@@ -236,6 +260,21 @@ def set_reproducibility(seed: int) -> None:
         tf.config.experimental.enable_op_determinism()
     except Exception:
         pass
+
+
+def log_progress(message: str) -> None:
+    """Emit a progress message to the configured DL logger."""
+
+    LOGGER.info(message)
+
+
+def summarize_binary_labels(labels: np.ndarray) -> str:
+    """Return a compact summary of class counts for logging."""
+
+    labels = np.asarray(labels).astype(int)
+    positives = int(np.sum(labels == 1))
+    negatives = int(np.sum(labels == 0))
+    return f"n={len(labels)} neg={negatives} pos={positives}"
 
 
 def focal_loss(gamma: float = 2.0, alpha: float = 0.35):
@@ -657,15 +696,34 @@ def train_and_evaluate_single_split(
     val_mask: pd.Series,
     test_mask: pd.Series,
     fold_label: str,
+    shared_feature_fold: dict | None = None,
 ) -> tuple[dict, pd.DataFrame, dict]:
     """Train one Transformer split and return fold metrics plus test predictions."""
 
     X_all = prepare_numeric_radiomics_matrix(df)
     y_all = df[args.label_column].to_numpy(dtype=int)
+    log_progress(
+        f"{fold_label} | numeric feature matrix ready with shape={X_all.shape}"
+    )
 
     selected_features = list(X_all.columns)
     selection_summary = None
-    if args.feature_selection == "most_discriminant":
+    selection_source = "all_numeric_features"
+    if shared_feature_fold is not None:
+        selected_features = list(shared_feature_fold["selected_features"])
+        missing_features = [feature_name for feature_name in selected_features if feature_name not in X_all.columns]
+        if missing_features:
+            raise ValueError(
+                f"The shared feature plan for {fold_label} contains features missing from the local table. "
+                f"First missing features: {missing_features[:10]}"
+            )
+        selection_source = "shared_outer_fold_feature_plan"
+        selection_summary = shared_feature_fold.get("selection_metadata", {})
+        log_progress(
+            f"{fold_label} | reusing shared outer-fold features from "
+            f"{args.shared_feature_folds_json} | count={len(selected_features)}"
+        )
+    elif args.feature_selection == "most_discriminant":
         selected_features, selection_df, selection_summary = select_radiomics_features(
             X_all.loc[train_mask],
             y_all[train_mask],
@@ -677,11 +735,31 @@ def train_and_evaluate_single_split(
             correlation_threshold=args.correlation_threshold,
             n_jobs=args.selection_n_jobs,
         )
+        selection_source = "inner_training_split"
         selection_df.to_csv(output_dir / "feature_selection_scores.csv", index=False)
-        (output_dir / "selected_features.txt").write_text(
-            "\n".join(selected_features) + "\n",
-            encoding="utf-8",
+        log_progress(
+            f"{fold_label} | computed inner-train feature selection | count={len(selected_features)}"
         )
+    else:
+        log_progress(f"{fold_label} | using all numeric radiomics features | count={len(selected_features)}")
+    (output_dir / "selected_features.txt").write_text(
+        "\n".join(selected_features) + "\n",
+        encoding="utf-8",
+    )
+    (output_dir / "selected_feature_source.json").write_text(
+        json.dumps(
+            {
+                "fold_label": fold_label,
+                "selection_source": selection_source,
+                "shared_feature_folds_json": args.shared_feature_folds_json,
+                "feature_selection_argument": args.feature_selection,
+                "selection_summary": selection_summary,
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
 
     X_selected = X_all[selected_features].replace([np.inf, -np.inf], np.nan)
     imputer = SimpleImputer(strategy="median")
@@ -698,6 +776,11 @@ def train_and_evaluate_single_split(
     y_train = y_all[train_mask]
     y_val = y_all[val_mask]
     y_test = y_all[test_mask]
+    log_progress(
+        f"{fold_label} | split summary | train {summarize_binary_labels(y_train)} | "
+        f"val {summarize_binary_labels(y_val)} | test {summarize_binary_labels(y_test)} | "
+        f"selected_features={len(selected_features)} | selection_source={selection_source}"
+    )
 
     config = TransformerConfig(
         batch_size=args.batch_size,
@@ -730,6 +813,10 @@ def train_and_evaluate_single_split(
         restore_best_weights=True,
         verbose=1,
     )
+    log_progress(
+        f"{fold_label} | training {args.architecture} | input_dim={X_train.shape[1]} | "
+        f"batch_size={config.batch_size} | epochs={config.epochs} | patience={config.patience}"
+    )
     history = model.fit(
         X_train,
         y_train,
@@ -741,7 +828,10 @@ def train_and_evaluate_single_split(
     )
 
     val_prob = model.predict(X_val, verbose=0).flatten()
-    threshold = choose_threshold(y_val, val_prob)
+    if args.threshold_strategy == "fixed_0.5":
+        threshold = 0.5
+    else:
+        threshold = choose_threshold(y_val, val_prob)
     test_prob = model.predict(X_test, verbose=0).flatten()
     test_metrics = compute_binary_metrics(y_test, test_prob, threshold)
     test_pred = (test_prob >= threshold).astype(int)
@@ -757,6 +847,14 @@ def train_and_evaluate_single_split(
     predictions["probability_csPCa"] = test_prob
     predictions["prediction"] = test_pred
     predictions.to_csv(output_dir / "test_predictions.csv", index=False)
+    best_epoch = int(np.argmax(history.history.get("val_auc", [0.0])) + 1)
+    log_progress(
+        f"{fold_label} | training finished | best_epoch={best_epoch} | "
+        f"threshold_strategy={args.threshold_strategy} | threshold={threshold:.4f} | "
+        f"auc={test_metrics['auc']:.4f} | "
+        f"balanced_accuracy={test_metrics['balanced_accuracy']:.4f} | "
+        f"f1={test_metrics['f1']:.4f} | mcc={test_metrics['mcc']:.4f}"
+    )
 
     pd.DataFrame([test_metrics]).to_csv(output_dir / "test_metrics.csv", index=False)
     (output_dir / "classification_report.txt").write_text(
@@ -773,6 +871,7 @@ def train_and_evaluate_single_split(
         "arguments": vars(args),
         "model_config": asdict(config),
         "selection_summary": selection_summary,
+        "selection_source": selection_source,
         "selected_feature_count": len(selected_features),
         "architecture": args.architecture,
         "model_name": model.name,
@@ -801,15 +900,41 @@ def main() -> None:
         args.run_name = f"features_all_gland_{args.architecture}"
     output_dir = (PROJECT_ROOT / args.output_dir / args.run_name).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    global LOGGER
+    LOGGER = setup_logger(
+        logger_name=f"radiomics_dl.{args.run_name}",
+        log_file=output_dir / "training.log",
+    )
+    log_progress(f"Output directory: {output_dir}")
+    log_progress(f"Feature table: {feature_table}")
+    log_progress(
+        f"Architecture={args.architecture} | feature_selection={args.feature_selection} | "
+        f"predefined_folds_json={args.predefined_folds_json} | "
+        f"shared_feature_folds_json={args.shared_feature_folds_json} | "
+        f"threshold_strategy={args.threshold_strategy}"
+    )
+    log_progress(
+        f"Training config | batch_size={args.batch_size} | epochs={args.epochs} | "
+        f"patience={args.patience} | random_state={args.random_state}"
+    )
 
     df = pd.read_csv(feature_table).dropna(subset=[args.label_column, args.group_column]).copy()
     df[args.group_column] = df[args.group_column].astype(str)
     df[args.label_column] = df[args.label_column].astype(int)
     if "sample_id" not in df.columns and {"patient_id", "study_id"}.issubset(df.columns):
         df["sample_id"] = df["patient_id"].astype(str) + "_" + df["study_id"].astype(str)
+    log_progress(
+        f"Loaded cohort with {len(df)} rows | unique patients={df[args.group_column].nunique()}"
+    )
+
+    if args.shared_feature_folds_json and not args.predefined_folds_json:
+        raise ValueError("--shared_feature_folds_json requires --predefined_folds_json.")
 
     if args.predefined_folds_json:
         predefined_payload = load_predefined_folds(Path(args.predefined_folds_json).resolve())
+        shared_feature_payload = None
+        if args.shared_feature_folds_json:
+            shared_feature_payload = load_shared_fold_feature_plan(Path(args.shared_feature_folds_json).resolve())
         sample_ids = (
             df["sample_id"].astype(str).to_numpy()
             if "sample_id" in df.columns
@@ -827,6 +952,7 @@ def main() -> None:
             payload=predefined_payload,
             identifiers=identifiers,
         )
+        log_progress(f"Resolved {len(split_definitions)} predefined outer folds.")
 
         fold_metrics_rows = []
         prediction_frames = []
@@ -836,6 +962,10 @@ def main() -> None:
             fold_name = f"fold_{fold_position:02d}"
             fold_output_dir = output_dir / fold_name
             fold_output_dir.mkdir(parents=True, exist_ok=True)
+            log_progress(
+                f"Starting {fold_name} | outer_train={len(split_definition['train_idx'])} | "
+                f"outer_test={len(split_definition['val_idx'])}"
+            )
 
             outer_train_mask = pd.Series(False, index=df.index)
             outer_test_mask = pd.Series(False, index=df.index)
@@ -855,6 +985,19 @@ def main() -> None:
                     f"{fold_name} produced an empty train/validation/test partition."
                 )
 
+            shared_feature_fold = None
+            if shared_feature_payload is not None:
+                shared_feature_fold = resolve_shared_features_for_fold(
+                    payload=shared_feature_payload,
+                    fold_index=int(split_definition["fold_index"]),
+                    val_identifiers=sample_ids[np.asarray(split_definition["val_idx"], dtype=int)],
+                )
+                log_progress(
+                    f"{fold_name} | matched shared feature plan fold_index="
+                    f"{shared_feature_fold['fold_index']} | selected_features="
+                    f"{len(shared_feature_fold['selected_features'])}"
+                )
+
             fold_metrics, fold_predictions, fold_run_config = train_and_evaluate_single_split(
                 df=df,
                 args=args,
@@ -864,6 +1007,7 @@ def main() -> None:
                 val_mask=inner_val_mask,
                 test_mask=outer_test_mask,
                 fold_label=fold_name,
+                shared_feature_fold=shared_feature_fold,
             )
             fold_metrics_rows.append(
                 {
@@ -907,6 +1051,11 @@ def main() -> None:
             json.dumps(summary_payload, indent=2, sort_keys=True),
             encoding="utf-8",
         )
+        log_progress(
+            f"Completed predefined-fold CV | pooled_auc={oof_metrics['auc']:.4f} | "
+            f"pooled_balanced_accuracy={oof_metrics['balanced_accuracy']:.4f} | "
+            f"pooled_f1={oof_metrics['f1']:.4f} | pooled_mcc={oof_metrics['mcc']:.4f}"
+        )
         print(json.dumps(summary_payload["oof_metrics"], indent=2, sort_keys=True))
         return
 
@@ -923,6 +1072,12 @@ def main() -> None:
     )
     if not train_mask.any() or not val_mask.any() or not test_mask.any():
         raise ValueError("Train, validation, and test splits must all contain samples.")
+    log_progress(
+        "Resolved hold-out split | "
+        f"train {summarize_binary_labels(df.loc[train_mask, args.label_column].to_numpy(dtype=int))} | "
+        f"val {summarize_binary_labels(df.loc[val_mask, args.label_column].to_numpy(dtype=int))} | "
+        f"test {summarize_binary_labels(df.loc[test_mask, args.label_column].to_numpy(dtype=int))}"
+    )
 
     test_metrics, _, _ = train_and_evaluate_single_split(
         df=df,
@@ -933,6 +1088,11 @@ def main() -> None:
         val_mask=val_mask,
         test_mask=test_mask,
         fold_label="holdout",
+    )
+    log_progress(
+        f"Hold-out evaluation finished | auc={test_metrics['auc']:.4f} | "
+        f"balanced_accuracy={test_metrics['balanced_accuracy']:.4f} | "
+        f"f1={test_metrics['f1']:.4f} | mcc={test_metrics['mcc']:.4f}"
     )
 
     print(json.dumps(test_metrics, indent=2, sort_keys=True))

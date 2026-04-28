@@ -77,6 +77,7 @@ from train.common.radiomics_utils import (
     select_radiomics_features,
 )
 from train.common.runtime_utils import (
+    export_shared_fold_feature_plan,
     load_predefined_folds,
     resolve_identifier_array,
     resolve_predefined_folds_to_indices,
@@ -1503,6 +1504,14 @@ def main():
         help="Ignore any saved grouped fold-plan cache and recompute fold-wise feature selection.",
     )
     parser.add_argument(
+        "--prepare_shared_features_only",
+        action="store_true",
+        help=(
+            "Compute outer-fold feature selection and export shared_fold_feature_plan.json, "
+            "then stop before fitting any ML classifier."
+        ),
+    )
+    parser.add_argument(
         "--search_iterations",
         type=int,
         default=50,
@@ -1817,6 +1826,15 @@ def main():
         fold_plan_summary_df = summarize_fold_plan(fold_plan=fold_plan, sample_ids=sample_ids)
         fold_plan_summary_path = experiment_dir / "fold_plan_summary.csv"
         fold_plan_summary_df.to_csv(fold_plan_summary_path, index=False)
+        shared_fold_feature_plan_path = export_shared_fold_feature_plan(
+            output_path=experiment_dir / "shared_fold_feature_plan.json",
+            fold_plan=fold_plan,
+            sample_ids=sample_ids,
+            source_csv=data_path,
+            feature_strategy=args.feature_strategy,
+            predefined_folds_path=predefined_folds_path,
+            predefined_fold_id_type=args.predefined_fold_id_type if predefined_folds_path is not None else None,
+        )
         duplicate_validation_folds = int(
             len(fold_plan_summary_df) - fold_plan_summary_df["val_signature"].nunique()
         )
@@ -1829,6 +1847,40 @@ def main():
             f"Fold-plan summary saved to: {fold_plan_summary_path} | "
             f"duplicate validation signatures across repeats={duplicate_validation_folds}"
         )
+        log_progress(
+            f"Shared fold-wise feature plan exported to: {shared_fold_feature_plan_path}"
+        )
+        if shared_selection_records:
+            shared_selection_dir = experiment_dir / "shared_feature_selection"
+            shared_selection_dir.mkdir(parents=True, exist_ok=True)
+            shared_selection_df = pd.DataFrame(shared_selection_records)
+            shared_selection_df.to_csv(
+                shared_selection_dir / "shared_selected_features_by_fold.csv",
+                index=False,
+            )
+
+            shared_fold_rows = []
+            for fold_info in fold_plan:
+                shared_fold_rows.append(
+                    {
+                        "fold_index": fold_info["fold_index"],
+                        "Repeat": fold_info["Repeat"],
+                        "fold_in_repeat": fold_info["fold_in_repeat"],
+                        "num_selected_features": len(fold_info["selected_features"]),
+                        "selected_features": "||".join(fold_info["selected_features"]),
+                    }
+                )
+            pd.DataFrame(shared_fold_rows).to_csv(
+                shared_selection_dir / "shared_fold_selected_feature_lists.csv",
+                index=False,
+            )
+
+        if args.prepare_shared_features_only:
+            log_progress(
+                "prepare_shared_features_only=True | fold plan and shared feature subsets are ready. "
+                "Skipping ML classifier training."
+            )
+            return
 
         param_distributions_by_model = get_param_distributions() if args.tune else {}
         if args.tune:

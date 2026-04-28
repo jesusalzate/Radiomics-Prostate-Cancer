@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -160,6 +161,113 @@ def load_predefined_folds(split_file: str | Path) -> dict:
     """Load a predefined fold-assignment payload from disk."""
 
     return load_splits(split_file)
+
+
+def build_identifier_signature(identifiers: list[str] | np.ndarray) -> str:
+    """Build a stable hash for a fold's row identifiers."""
+
+    normalized_identifiers = sorted(str(identifier) for identifier in identifiers)
+    return hashlib.md5("||".join(normalized_identifiers).encode("utf-8")).hexdigest()
+
+
+def export_shared_fold_feature_plan(
+    *,
+    output_path: str | Path,
+    fold_plan: list[dict],
+    sample_ids: list[str] | np.ndarray,
+    source_csv: str | Path,
+    feature_strategy: str,
+    predefined_folds_path: str | Path | None = None,
+    predefined_fold_id_type: str | None = None,
+) -> Path:
+    """Export selected features per outer fold so multiple model families can reuse them."""
+
+    sample_ids_array = np.asarray(sample_ids).astype(str)
+    serialized_folds = []
+    for position, fold_info in enumerate(fold_plan, start=1):
+        train_ids = sample_ids_array[np.asarray(fold_info["train_idx"], dtype=int)].tolist()
+        val_ids = sample_ids_array[np.asarray(fold_info["val_idx"], dtype=int)].tolist()
+        serialized_folds.append(
+            {
+                "fold_index": int(fold_info.get("fold_index", position)),
+                "Repeat": int(fold_info.get("Repeat", 1)),
+                "fold_in_repeat": int(fold_info.get("fold_in_repeat", position)),
+                "n_train": len(train_ids),
+                "n_val": len(val_ids),
+                "train_ids": train_ids,
+                "val_ids": val_ids,
+                "train_signature": build_identifier_signature(train_ids),
+                "val_signature": build_identifier_signature(val_ids),
+                "selected_features": list(fold_info["selected_features"]),
+                "selection_metadata": fold_info.get("selection_metadata", {}),
+            }
+        )
+
+    payload = {
+        "metadata": {
+            "source_csv": str(Path(source_csv).resolve()),
+            "feature_strategy": feature_strategy,
+            "predefined_folds_path": (
+                str(Path(predefined_folds_path).resolve()) if predefined_folds_path is not None else None
+            ),
+            "predefined_fold_id_type": predefined_fold_id_type,
+            "n_folds": len(serialized_folds),
+        },
+        "folds": serialized_folds,
+    }
+    output_path = Path(output_path)
+    ensure_directory(output_path.parent)
+    with output_path.open("w", encoding="utf-8") as file_handle:
+        json.dump(payload, file_handle, indent=2)
+    return output_path
+
+
+def load_shared_fold_feature_plan(plan_file: str | Path) -> dict:
+    """Load fold-wise selected features shared across model families."""
+
+    with Path(plan_file).open("r", encoding="utf-8") as file_handle:
+        return json.load(file_handle)
+
+
+def resolve_shared_features_for_fold(
+    *,
+    payload: dict,
+    fold_index: int,
+    val_identifiers: list[str] | np.ndarray,
+) -> dict:
+    """Find the exported feature subset that matches a given outer fold."""
+
+    folds = payload.get("folds")
+    if not isinstance(folds, list) or not folds:
+        raise ValueError("The shared feature file must contain a non-empty 'folds' list.")
+
+    val_signature = build_identifier_signature(val_identifiers)
+
+    exact_matches = [
+        fold_entry
+        for fold_entry in folds
+        if int(fold_entry.get("fold_index", -1)) == int(fold_index)
+        and fold_entry.get("val_signature") == val_signature
+    ]
+    if len(exact_matches) == 1:
+        return exact_matches[0]
+
+    signature_matches = [
+        fold_entry for fold_entry in folds if fold_entry.get("val_signature") == val_signature
+    ]
+    if len(signature_matches) == 1:
+        return signature_matches[0]
+
+    index_matches = [
+        fold_entry for fold_entry in folds if int(fold_entry.get("fold_index", -1)) == int(fold_index)
+    ]
+    if len(index_matches) == 1:
+        return index_matches[0]
+
+    raise ValueError(
+        f"Could not match shared features for fold_index={fold_index} "
+        f"with validation signature={val_signature}."
+    )
 
 
 def resolve_identifier_array(

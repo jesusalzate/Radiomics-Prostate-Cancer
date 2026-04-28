@@ -231,6 +231,63 @@ Con eso:
 - las métricas umbral-dependientes de DL dejan de usar un umbral propio por fold
 - `AUC` sigue siendo la métrica más limpia para la comparación principal
 
+## 3b. Benchmark final ampliado con interpretabilidad
+
+Si ya has ejecutado:
+
+- el ranking amplio `5x10`
+- el run final ML `top 3`
+- la suite DL sobre los `5` folds finales
+
+entonces puedes lanzar una comparación ampliada que:
+
+- recalcula métricas caso a caso con un umbral fijo común
+- añade métricas estilo PI-CAI aplicables a clasificación tabular:
+  - `AUROC`
+  - `AP`
+  - `PI-CAI score = (AUROC + AP) / 2`
+  - curvas `ROC` y `PR`
+- compara todos los modelos fold a fold
+- genera interpretabilidad post hoc:
+  - `permutation importance` para ML y DL
+  - `SHAP` para ML cuando el modelo lo soporte
+  - `Integrated Gradients` para DL
+
+Script:
+
+```bash
+python train/radiomics/2_modeling/6_compare_final_models_and_interpretability.py \
+  --csv features_all_gland.csv \
+  --data_pre artifacts/radiomics \
+  --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
+  --shared_feature_folds_json results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_feature_prep/shared_fold_feature_plan.json \
+  --predefined_fold_id_type sample_id \
+  --ml_results_csv results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned/results_features_all_gland_most_discriminant.csv \
+  --ml_predictions_csv results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned/predictions_features_all_gland_most_discriminant.csv \
+  --ml_oof_csv results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned/oof_predictions_aggregated_features_all_gland_most_discriminant.csv \
+  --ml_summary_csv results/radiomics/most_discriminant/gland/more_features_v2_rank_5x10/aggregated_performance/summary_metrics.csv \
+  --top_k_ml 3 \
+  --dl_manifest_json results/radiomics/deep_tabular_models/more_features_v2_final_5fold_suite_manifest.json \
+  --classification_threshold 0.5 \
+  --outdir results/radiomics/final_ml_vs_dl_more_features_v2_interpretability
+```
+
+Salidas principales:
+
+- `metrics/fold_metrics_all_models.csv`
+- `metrics/pooled_metrics_all_models.csv`
+- `metrics/foldwise_pairwise_comparisons.csv`
+- `curves/pooled_roc_comparison.png`
+- `curves/pooled_pr_comparison.png`
+- `curves/*_by_fold.png`
+- `interpretability/permutation/global_permutation_importance.csv`
+- `interpretability/native/global_native_importance.csv`
+
+Importante:
+
+- las métricas de detección lesional y `FROC` de `picai_eval` no aplican aquí porque este benchmark usa predicciones tabulares caso a caso, no mapas 3D de detección
+- sí se reproducen las métricas diagnósticas caso a caso más cercanas al uso de PI-CAI
+
 ## 4. Cómo se hace la selección de características
 
 Esta es la parte más importante del pipeline y también la que suele generar más confusión.

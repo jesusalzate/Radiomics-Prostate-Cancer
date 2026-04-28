@@ -76,6 +76,11 @@ from train.common.radiomics_utils import (
     resolve_feature_table_path,
     select_radiomics_features,
 )
+from train.common.runtime_utils import (
+    load_predefined_folds,
+    resolve_identifier_array,
+    resolve_predefined_folds_to_indices,
+)
 
 mpl.use("Agg")
 try:
@@ -196,6 +201,7 @@ def build_fold_plan_cache_key(
     minority_samples_per_feature: int,
     fdr_alpha: float,
     correlation_threshold: float,
+    predefined_folds_path: Path | None = None,
 ) -> str:
     """Build a reproducible cache key for grouped folds and fold-wise feature selection."""
 
@@ -214,7 +220,19 @@ def build_fold_plan_cache_key(
         "minority_samples_per_feature": minority_samples_per_feature,
         "fdr_alpha": fdr_alpha,
         "correlation_threshold": correlation_threshold,
+        "predefined_folds_path": None,
+        "predefined_folds_mtime_ns": None,
+        "predefined_folds_size": None,
     }
+    if predefined_folds_path is not None:
+        predefined_stat = predefined_folds_path.stat()
+        payload.update(
+            {
+                "predefined_folds_path": str(predefined_folds_path.resolve()),
+                "predefined_folds_mtime_ns": predefined_stat.st_mtime_ns,
+                "predefined_folds_size": predefined_stat.st_size,
+            }
+        )
     payload_json = json.dumps(payload, sort_keys=True)
     return hashlib.md5(payload_json.encode("utf-8")).hexdigest()
 
@@ -470,6 +488,144 @@ def get_param_distributions():
     return distributions
 
 
+def build_split_definitions_from_grouped_cv(
+    X: pd.DataFrame,
+    y: np.ndarray,
+    groups: np.ndarray,
+    n_splits: int,
+    n_repeats: int,
+    base_random_state: int,
+) -> list[dict]:
+    """Generate reusable train/validation index definitions from grouped repeated CV."""
+
+    split_definitions = []
+    global_fold_index = 0
+
+    for repeat_index in range(1, n_repeats + 1):
+        log_progress(
+            f"Preparing fold plan | repeat {repeat_index}/{n_repeats} "
+            f"with grouped {n_splits}-fold CV."
+        )
+        current_random_state = base_random_state + repeat_index - 1
+        splitter = StratifiedGroupKFold(
+            n_splits=n_splits,
+            shuffle=True,
+            random_state=current_random_state,
+        )
+
+        for train_idx, val_idx in splitter.split(X, y, groups=groups):
+            global_fold_index += 1
+            split_definitions.append(
+                {
+                    "fold_index": global_fold_index,
+                    "Repeat": repeat_index,
+                    "fold_in_repeat": ((global_fold_index - 1) % n_splits) + 1,
+                    "train_idx": train_idx,
+                    "val_idx": val_idx,
+                }
+            )
+
+    return split_definitions
+
+
+def build_cv_fold_plan_from_split_definitions(
+    X: pd.DataFrame,
+    y: np.ndarray,
+    split_definitions: list[dict],
+    feature_strategy: str = "all",
+    min_features: int = 10,
+    max_features_cap: int = 60,
+    samples_per_feature: int = 25,
+    minority_samples_per_feature: int = 8,
+    fdr_alpha: float = 0.05,
+    correlation_threshold: float = 0.90,
+    selection_n_jobs: int | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Build a fold plan from precomputed train/validation index definitions."""
+
+    fold_plan = []
+    selection_records = []
+    total_folds = len(split_definitions)
+
+    for split_definition in split_definitions:
+        train_idx = np.asarray(split_definition["train_idx"], dtype=int)
+        val_idx = np.asarray(split_definition["val_idx"], dtype=int)
+        global_fold_index = int(split_definition["fold_index"])
+        repeat_index = int(split_definition.get("Repeat", 1))
+        fold_in_repeat = int(split_definition.get("fold_in_repeat", global_fold_index))
+        X_train_raw = X.iloc[train_idx].copy()
+        y_train = y[train_idx]
+
+        train_positive = int(np.sum(y_train == 1))
+        val_positive = int(np.sum(y[val_idx] == 1))
+        log_progress(
+            f"Preparing fold {global_fold_index}/{total_folds} "
+            f"(repeat {repeat_index}/{max(1, max(item.get('Repeat', 1) for item in split_definitions))}, "
+            f"local fold {fold_in_repeat}) "
+            f"| train n={len(train_idx)} pos={train_positive} "
+            f"| val n={len(val_idx)} pos={val_positive}"
+        )
+
+        if feature_strategy == "most_discriminant":
+            selected_features, selection_df, selection_metadata = select_radiomics_features(
+                X_train=X_train_raw,
+                y_train=y_train,
+                repeat_index=repeat_index,
+                fold_index=global_fold_index,
+                min_features=min_features,
+                max_features_cap=max_features_cap,
+                samples_per_feature=samples_per_feature,
+                minority_samples_per_feature=minority_samples_per_feature,
+                fdr_alpha=fdr_alpha,
+                correlation_threshold=correlation_threshold,
+                n_jobs=selection_n_jobs,
+            )
+            selection_records.extend(
+                {
+                    **record,
+                    **selection_metadata,
+                }
+                for record in selection_df.to_dict(orient="records")
+            )
+            log_progress(
+                f"Prepared fold {global_fold_index}/{total_folds} "
+                f"| selected {len(selected_features)} features "
+                f"(FDR candidates={selection_metadata['n_fdr_features']}, "
+                f"pruned pool={selection_metadata['n_pruned_features']}, "
+                f"cap={selection_metadata['feature_limit']})"
+            )
+        else:
+            selected_features = X_train_raw.columns.tolist()
+            selection_metadata = {
+                "feature_limit": len(selected_features),
+                "n_valid_features": len(selected_features),
+                "n_fdr_features": len(selected_features),
+                "n_candidate_features": len(selected_features),
+                "n_pruned_features": len(selected_features),
+                "correlation_threshold": correlation_threshold,
+                "fdr_alpha": fdr_alpha,
+                "selection_n_jobs": selection_n_jobs,
+            }
+            log_progress(
+                f"Prepared fold {global_fold_index}/{total_folds} "
+                f"| using all {len(selected_features)} features."
+            )
+
+        fold_plan.append(
+            {
+                "fold_index": global_fold_index,
+                "Repeat": repeat_index,
+                "fold_in_repeat": fold_in_repeat,
+                "train_idx": train_idx,
+                "val_idx": val_idx,
+                "selected_features": selected_features,
+                "selection_metadata": selection_metadata,
+            }
+        )
+
+    return fold_plan, selection_records
+
+
 def build_cv_fold_plan(
     X: pd.DataFrame,
     y: np.ndarray,
@@ -488,96 +644,27 @@ def build_cv_fold_plan(
 ) -> tuple[list[dict], list[dict]]:
     """Precompute grouped CV splits and training-only feature subsets once for reuse across models."""
 
-    fold_plan = []
-    selection_records = []
-    total_folds = n_splits * n_repeats
-    global_fold_index = 0
-
-    for repeat_index in range(1, n_repeats + 1):
-        log_progress(
-            f"Preparing fold plan | repeat {repeat_index}/{n_repeats} "
-            f"with grouped {n_splits}-fold CV."
-        )
-        current_random_state = base_random_state + repeat_index - 1
-        splitter = StratifiedGroupKFold(
-            n_splits=n_splits,
-            shuffle=True,
-            random_state=current_random_state,
-        )
-
-        for train_idx, val_idx in splitter.split(X, y, groups=groups):
-            global_fold_index += 1
-            fold_in_repeat = ((global_fold_index - 1) % n_splits) + 1
-            X_train_raw = X.iloc[train_idx].copy()
-            y_train = y[train_idx]
-
-            train_positive = int(np.sum(y_train == 1))
-            val_positive = int(np.sum(y[val_idx] == 1))
-            log_progress(
-                f"Preparing fold {global_fold_index}/{total_folds} "
-                f"(repeat {repeat_index}/{n_repeats}, local fold {fold_in_repeat}/{n_splits}) "
-                f"| train n={len(train_idx)} pos={train_positive} "
-                f"| val n={len(val_idx)} pos={val_positive}"
-            )
-
-            if feature_strategy == "most_discriminant":
-                selected_features, selection_df, selection_metadata = select_radiomics_features(
-                    X_train=X_train_raw,
-                    y_train=y_train,
-                    repeat_index=repeat_index,
-                    fold_index=global_fold_index,
-                    min_features=min_features,
-                    max_features_cap=max_features_cap,
-                    samples_per_feature=samples_per_feature,
-                    minority_samples_per_feature=minority_samples_per_feature,
-                    fdr_alpha=fdr_alpha,
-                    correlation_threshold=correlation_threshold,
-                    n_jobs=selection_n_jobs,
-                )
-                selection_records.extend(
-                    {
-                        **record,
-                        **selection_metadata,
-                    }
-                    for record in selection_df.to_dict(orient="records")
-                )
-                log_progress(
-                    f"Prepared fold {global_fold_index}/{total_folds} "
-                    f"| selected {len(selected_features)} features "
-                    f"(FDR candidates={selection_metadata['n_fdr_features']}, "
-                    f"pruned pool={selection_metadata['n_pruned_features']}, "
-                    f"cap={selection_metadata['feature_limit']})"
-                )
-            else:
-                selected_features = X_train_raw.columns.tolist()
-                selection_metadata = {
-                    "feature_limit": len(selected_features),
-                    "n_valid_features": len(selected_features),
-                    "n_fdr_features": len(selected_features),
-                    "n_candidate_features": len(selected_features),
-                    "n_pruned_features": len(selected_features),
-                    "correlation_threshold": correlation_threshold,
-                    "fdr_alpha": fdr_alpha,
-                    "selection_n_jobs": selection_n_jobs,
-                }
-                log_progress(
-                    f"Prepared fold {global_fold_index}/{total_folds} "
-                    f"| using all {len(selected_features)} features."
-                )
-
-            fold_plan.append(
-                {
-                    "fold_index": global_fold_index,
-                    "Repeat": repeat_index,
-                    "fold_in_repeat": fold_in_repeat,
-                    "train_idx": train_idx,
-                    "val_idx": val_idx,
-                    "selected_features": selected_features,
-                    "selection_metadata": selection_metadata,
-                }
-            )
-
-    return fold_plan, selection_records
+    split_definitions = build_split_definitions_from_grouped_cv(
+        X=X,
+        y=y,
+        groups=groups,
+        n_splits=n_splits,
+        n_repeats=n_repeats,
+        base_random_state=base_random_state,
+    )
+    return build_cv_fold_plan_from_split_definitions(
+        X=X,
+        y=y,
+        split_definitions=split_definitions,
+        feature_strategy=feature_strategy,
+        min_features=min_features,
+        max_features_cap=max_features_cap,
+        samples_per_feature=samples_per_feature,
+        minority_samples_per_feature=minority_samples_per_feature,
+        fdr_alpha=fdr_alpha,
+        correlation_threshold=correlation_threshold,
+        selection_n_jobs=selection_n_jobs,
+    )
 
 
 def evaluate_model(
@@ -1025,6 +1112,25 @@ def choose_best_classifier(summary_df: pd.DataFrame) -> pd.Series:
     return ranking_df.iloc[0]
 
 
+def rank_classifiers_from_summary(summary_df: pd.DataFrame) -> list[str]:
+    """Return classifier names ordered by the same rule used for final model selection."""
+
+    required_columns = {"Classifier", "oof_auc"}
+    missing_columns = required_columns.difference(summary_df.columns)
+    if missing_columns:
+        raise ValueError(
+            "The summary CSV used for model selection is missing required columns: "
+            f"{sorted(missing_columns)}"
+        )
+
+    sort_columns = [column for column in ["oof_auc", "oof_auc_ci_low", "val_auc_median"] if column in summary_df.columns]
+    ranked_df = summary_df.sort_values(
+        by=sort_columns,
+        ascending=[False] * len(sort_columns),
+    ).reset_index(drop=True)
+    return ranked_df["Classifier"].astype(str).tolist()
+
+
 def save_aggregated_performance_outputs(
     aggregated_predictions_df: pd.DataFrame,
     summary_df: pd.DataFrame,
@@ -1426,6 +1532,52 @@ def main():
         action="store_true",
         help="Ignore any per-model resume checkpoint and start model training from the first model.",
     )
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        default=None,
+        help=(
+            "Optional list of classifier names to evaluate. "
+            "Example: --models SVM \"Logistic Regression\" \"Random Forest\""
+        ),
+    )
+    parser.add_argument(
+        "--model_summary_csv",
+        type=str,
+        default=None,
+        help=(
+            "Optional summary_metrics.csv from a previous broader comparison. "
+            "Used to auto-select the top classifiers for a final restricted run."
+        ),
+    )
+    parser.add_argument(
+        "--top_k_models",
+        type=int,
+        default=None,
+        help=(
+            "Number of top classifiers to keep when --model_summary_csv is provided. "
+            "Useful for final 5-fold predefined runs with only the top 3 ML models."
+        ),
+    )
+    parser.add_argument(
+        "--predefined_folds_json",
+        type=str,
+        default=None,
+        help=(
+            "Optional JSON file with predefined outer folds. When provided, the script reuses "
+            "those train/validation partitions instead of generating StratifiedGroupKFold splits."
+        ),
+    )
+    parser.add_argument(
+        "--predefined_fold_id_type",
+        type=str,
+        choices=["sample_id", "patient_study", "patient_id_study_id", "patient_id", "study_id"],
+        default="sample_id",
+        help=(
+            "Identifier type used inside --predefined_folds_json. PI-CAI subject lists are usually "
+            "compatible with 'sample_id' when sample_id = patient_id + '_' + study_id."
+        ),
+    )
     args = parser.parse_args()
 
     data_root = (PROJECT_ROOT / args.data_pre).resolve()
@@ -1509,11 +1661,19 @@ def main():
         )
     else:
         log_progress(f"Loaded {X.shape[0]} samples and {X.shape[1]} numeric features.")
-        log_progress(
-            f"Feature strategy: {args.feature_strategy} | "
-            f"n_splits={args.n_splits} | n_repeats={args.n_repeats} | "
-            f"bootstrap_iterations={args.bootstrap_iterations}"
-        )
+        if args.predefined_folds_json:
+            log_progress(
+                f"Feature strategy: {args.feature_strategy} | "
+                f"predefined_folds_json={args.predefined_folds_json} | "
+                f"predefined_fold_id_type={args.predefined_fold_id_type} | "
+                f"bootstrap_iterations={args.bootstrap_iterations}"
+            )
+        else:
+            log_progress(
+                f"Feature strategy: {args.feature_strategy} | "
+                f"n_splits={args.n_splits} | n_repeats={args.n_repeats} | "
+                f"bootstrap_iterations={args.bootstrap_iterations}"
+            )
         log_progress(
             "Feature selection settings: "
             f"min_features={args.min_features}, max_features_cap={args.max_features_cap}, "
@@ -1530,11 +1690,52 @@ def main():
         feature_selection_records = []
         completed_model_names: list[str] = []
         models = get_models(random_state=DEFAULT_BASE_RANDOM_STATE)
+        available_model_names = [model_name for model_name, _ in models]
+
+        selected_model_names = None
+        if args.model_summary_csv:
+            model_summary_path = Path(args.model_summary_csv).resolve()
+            model_summary_df = pd.read_csv(model_summary_path)
+            ranked_model_names = rank_classifiers_from_summary(model_summary_df)
+            selected_model_names = ranked_model_names[: args.top_k_models] if args.top_k_models else ranked_model_names
+            log_progress(
+                f"Selected models from summary ranking ({model_summary_path}): "
+                f"{', '.join(selected_model_names)}"
+            )
+
+        if args.models:
+            explicit_model_names = list(dict.fromkeys(args.models))
+            if selected_model_names is None:
+                selected_model_names = explicit_model_names
+            else:
+                selected_model_names = [model_name for model_name in selected_model_names if model_name in explicit_model_names]
+                log_progress(
+                    "Intersecting summary-based model selection with explicit --models list: "
+                    f"{', '.join(selected_model_names)}"
+                )
+
+        if selected_model_names is not None:
+            unknown_model_names = sorted(set(selected_model_names).difference(available_model_names))
+            if unknown_model_names:
+                raise ValueError(
+                    "Unknown classifier names requested: "
+                    f"{unknown_model_names}. Available models: {available_model_names}"
+                )
+            models = [(model_name, model) for model_name, model in models if model_name in selected_model_names]
+            if not models:
+                raise ValueError("No classifiers remain after applying the requested model filters.")
+            log_progress(
+                f"Restricted model set: {', '.join(model_name for model_name, _ in models)}"
+            )
+
         num_models = len(models)
         live_results_path = experiment_dir / f"results_live_{csv_stem}_{args.feature_strategy}.csv"
         resume_state_path = experiment_dir / f"resume_state_{csv_stem}_{args.feature_strategy}.joblib"
         log_progress(f"Live fold-metrics snapshot will be updated at: {live_results_path}")
         cache_root = (PROJECT_ROOT / args.selection_cache_dir).resolve()
+        predefined_folds_path = (
+            Path(args.predefined_folds_json).resolve() if args.predefined_folds_json is not None else None
+        )
         fold_plan_cache_key = build_fold_plan_cache_key(
             data_path=data_path,
             n_splits=args.n_splits,
@@ -1547,29 +1748,65 @@ def main():
             minority_samples_per_feature=args.minority_samples_per_feature,
             fdr_alpha=args.fdr_alpha,
             correlation_threshold=args.correlation_threshold,
+            predefined_folds_path=predefined_folds_path,
         )
         fold_plan_cache_path = cache_root / f"fold_plan_{fold_plan_cache_key}.joblib"
         if fold_plan_cache_path.exists() and not args.refresh_selection_cache:
             log_progress(f"Loading cached fold plan and feature selection from: {fold_plan_cache_path}")
             fold_plan, shared_selection_records = load_cached_fold_plan(fold_plan_cache_path)
         else:
-            log_progress("Precomputing grouped CV folds and training-only feature subsets for reuse across models...")
-            fold_plan, shared_selection_records = build_cv_fold_plan(
-                X=X,
-                y=y,
-                groups=groups,
-                n_splits=args.n_splits,
-                n_repeats=args.n_repeats,
-                base_random_state=DEFAULT_BASE_RANDOM_STATE,
-                feature_strategy=args.feature_strategy,
-                min_features=args.min_features,
-                max_features_cap=args.max_features_cap,
-                samples_per_feature=args.samples_per_feature,
-                minority_samples_per_feature=args.minority_samples_per_feature,
-                fdr_alpha=args.fdr_alpha,
-                correlation_threshold=args.correlation_threshold,
-                selection_n_jobs=args.selection_n_jobs,
-            )
+            if predefined_folds_path is not None:
+                log_progress(
+                    f"Loading predefined fold assignments from: {predefined_folds_path}"
+                )
+                predefined_payload = load_predefined_folds(predefined_folds_path)
+                fold_identifiers = resolve_identifier_array(
+                    sample_ids=sample_ids,
+                    patient_ids=patient_ids,
+                    study_ids=study_ids,
+                    identifier_type=args.predefined_fold_id_type,
+                )
+                split_definitions = resolve_predefined_folds_to_indices(
+                    payload=predefined_payload,
+                    identifiers=fold_identifiers,
+                )
+                log_progress(
+                    f"Precomputing feature subsets over {len(split_definitions)} predefined folds "
+                    "for reuse across models..."
+                )
+                fold_plan, shared_selection_records = build_cv_fold_plan_from_split_definitions(
+                    X=X,
+                    y=y,
+                    split_definitions=split_definitions,
+                    feature_strategy=args.feature_strategy,
+                    min_features=args.min_features,
+                    max_features_cap=args.max_features_cap,
+                    samples_per_feature=args.samples_per_feature,
+                    minority_samples_per_feature=args.minority_samples_per_feature,
+                    fdr_alpha=args.fdr_alpha,
+                    correlation_threshold=args.correlation_threshold,
+                    selection_n_jobs=args.selection_n_jobs,
+                )
+            else:
+                log_progress(
+                    "Precomputing grouped CV folds and training-only feature subsets for reuse across models..."
+                )
+                fold_plan, shared_selection_records = build_cv_fold_plan(
+                    X=X,
+                    y=y,
+                    groups=groups,
+                    n_splits=args.n_splits,
+                    n_repeats=args.n_repeats,
+                    base_random_state=DEFAULT_BASE_RANDOM_STATE,
+                    feature_strategy=args.feature_strategy,
+                    min_features=args.min_features,
+                    max_features_cap=args.max_features_cap,
+                    samples_per_feature=args.samples_per_feature,
+                    minority_samples_per_feature=args.minority_samples_per_feature,
+                    fdr_alpha=args.fdr_alpha,
+                    correlation_threshold=args.correlation_threshold,
+                    selection_n_jobs=args.selection_n_jobs,
+                )
             save_cached_fold_plan(
                 cache_path=fold_plan_cache_path,
                 fold_plan=fold_plan,

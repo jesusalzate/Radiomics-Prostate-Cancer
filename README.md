@@ -145,6 +145,7 @@ python train/radiomics/2_modeling/4_train_tabular_transformer.py \
 - Selección de características dentro de cada fold o split de entrenamiento.
 - Imputación y escalado ajustados solo con train.
 - Comparación clásica con folds compartidos entre clasificadores.
+- Reutilización opcional de folds externos fijos para la comparación final entre ML clásico y deep learning.
 - Deep learning permitido solo como modelo tabular sobre variables radiómicas.
 
 ## Documentación adicional

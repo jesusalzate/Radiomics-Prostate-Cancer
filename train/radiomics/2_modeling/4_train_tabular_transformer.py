@@ -53,6 +53,11 @@ from train.common.radiomics_utils import (
     resolve_feature_table_path,
     select_radiomics_features,
 )
+from train.common.runtime_utils import (
+    load_predefined_folds,
+    resolve_identifier_array,
+    resolve_predefined_folds_to_indices,
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +75,8 @@ class TransformerConfig:
     patience: int = 50
     focal_gamma: float = 2.0
     focal_alpha: float = 0.35
+    num_capsules: int = 2
+    dim_capsules: int = 16
 
 
 class PositionalEmbedding(layers.Layer):
@@ -120,6 +127,55 @@ class AttentionPooling1D(layers.Layer):
         return config
 
 
+class DigitCapsuleLayer(layers.Layer):
+    """Dynamic-routing capsule layer for binary radiomics classification."""
+
+    def __init__(self, num_capsules: int, dim_capsules: int, routing_iterations: int = 2, **kwargs):
+        super().__init__(**kwargs)
+        self.num_capsules = num_capsules
+        self.dim_capsules = dim_capsules
+        self.routing_iterations = routing_iterations
+
+    def build(self, input_shape):
+        self.num_input_caps = input_shape[1]
+        self.input_dim = input_shape[2]
+        self.W = self.add_weight(
+            name="capsule_kernel",
+            shape=(1, self.num_input_caps, self.num_capsules, self.dim_capsules, self.input_dim),
+            initializer="glorot_uniform",
+            trainable=True,
+        )
+
+    def call(self, inputs):
+        batch_size = tf.shape(inputs)[0]
+        u = tf.expand_dims(inputs, axis=2)
+        u = tf.expand_dims(u, axis=-1)
+        tiled_weights = tf.tile(self.W, [batch_size, 1, 1, 1, 1])
+        u_hat = tf.matmul(tiled_weights, u)
+        u_hat = tf.squeeze(u_hat, axis=-1)
+        routing_logits = tf.zeros((batch_size, self.num_input_caps, self.num_capsules, 1), dtype=inputs.dtype)
+
+        for _ in range(self.routing_iterations):
+            coupling = tf.nn.softmax(routing_logits, axis=2)
+            capsule_inputs = tf.reduce_sum(coupling * u_hat, axis=1, keepdims=True)
+            capsule_outputs = squash(capsule_inputs)
+            agreement = tf.reduce_sum(u_hat * capsule_outputs, axis=-1, keepdims=True)
+            routing_logits = routing_logits + agreement
+
+        return tf.squeeze(capsule_outputs, axis=1)
+
+    def get_config(self):
+        config = super().get_config()
+        config.update(
+            {
+                "num_capsules": self.num_capsules,
+                "dim_capsules": self.dim_capsules,
+                "routing_iterations": self.routing_iterations,
+            }
+        )
+        return config
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train a tabular Transformer on prostate radiomics features."
@@ -135,6 +191,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data_pre", default="artifacts/radiomics")
     parser.add_argument("--output_dir", default="results/radiomics/deep_tabular_transformer")
     parser.add_argument("--run_name", default="features_all_gland_transformer")
+    parser.add_argument(
+        "--architecture",
+        choices=["transformer", "capsnet", "transformer_capsnet"],
+        default="transformer",
+    )
     parser.add_argument("--label_column", default="label")
     parser.add_argument("--group_column", default="patient_id")
     parser.add_argument("--train_ids_csv", default=None)
@@ -158,6 +219,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--patience", type=int, default=50)
+    parser.add_argument("--predefined_folds_json", default=None)
+    parser.add_argument(
+        "--predefined_fold_id_type",
+        choices=["sample_id", "patient_study", "patient_id_study_id", "patient_id", "study_id"],
+        default="sample_id",
+    )
     return parser.parse_args()
 
 
@@ -183,6 +250,14 @@ def focal_loss(gamma: float = 2.0, alpha: float = 0.35):
         return tf.reduce_mean(alpha_t * tf.pow(1 - p_t, gamma) * bce)
 
     return loss_fn
+
+
+def squash(inputs, axis: int = -1):
+    """Squashing non-linearity used by capsule networks."""
+
+    squared_norm = tf.reduce_sum(tf.square(inputs), axis=axis, keepdims=True)
+    scale = squared_norm / (1.0 + squared_norm)
+    return scale * inputs / tf.sqrt(squared_norm + 1e-7)
 
 
 def mlp_block(x, hidden_units: list[int], dropout_rate: float):
@@ -256,6 +331,142 @@ def build_tabular_transformer(input_dim: int, config: TransformerConfig) -> Mode
     return model
 
 
+def _compile_binary_deep_model(model: Model, config: TransformerConfig) -> Model:
+    lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
+        initial_learning_rate=config.learning_rate,
+        first_decay_steps=50,
+        t_mul=2.0,
+        m_mul=0.9,
+    )
+    model.compile(
+        optimizer=Adam(learning_rate=lr_schedule),
+        loss=focal_loss(gamma=config.focal_gamma, alpha=config.focal_alpha),
+        metrics=["accuracy", tf.keras.metrics.AUC(name="auc")],
+    )
+    return model
+
+
+def build_capsnet_model(input_dim: int, config: TransformerConfig) -> Model:
+    inputs = layers.Input(shape=(input_dim,), name="radiomics_features")
+    x = layers.Dense(16, activation="gelu")(inputs)
+    x = layers.Dense(32, activation="gelu")(x)
+    x = layers.Dense(
+        64,
+        activation="gelu",
+        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+    )(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(config.dense_dropout)(x)
+    x = layers.Dense(
+        config.num_tokens * config.dim_capsules,
+        activation="gelu",
+        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+    )(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(config.dense_dropout)(x)
+    x = layers.Reshape((config.num_tokens, config.dim_capsules))(x)
+    squashed_tokens = layers.Lambda(
+        lambda tensor: squash(tensor),
+        output_shape=(config.num_tokens, config.dim_capsules),
+        name="capsnet_token_squash",
+    )(x)
+    digit_caps = DigitCapsuleLayer(
+        num_capsules=config.num_capsules,
+        dim_capsules=config.dim_capsules,
+    )(squashed_tokens)
+    capsule_norms = layers.Lambda(
+        lambda tensor: tf.sqrt(tf.reduce_sum(tf.square(tensor), axis=-1) + tf.keras.backend.epsilon()),
+        output_shape=(config.num_capsules,),
+        name="capsule_norms",
+    )(digit_caps)
+    probabilities = layers.Softmax(name="capsule_softmax")(capsule_norms)
+    outputs = layers.Lambda(
+        lambda tensor: tensor[:, 1:2],
+        output_shape=(1,),
+        name="csPCa_probability",
+    )(probabilities)
+    model = Model(inputs=inputs, outputs=outputs, name="radiomics_capsnet")
+    return _compile_binary_deep_model(model, config)
+
+
+def build_transformer_capsnet_model(input_dim: int, config: TransformerConfig) -> Model:
+    token_width = config.num_tokens * config.dim_capsules
+
+    inputs = layers.Input(shape=(input_dim,), name="radiomics_features")
+    x = layers.Dense(16, activation="gelu")(inputs)
+    x = layers.Dense(32, activation="gelu")(x)
+    x = layers.Dense(
+        64,
+        activation="gelu",
+        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+    )(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(config.dense_dropout)(x)
+    x = layers.Dense(
+        token_width,
+        activation="gelu",
+        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+    )(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dropout(config.dense_dropout)(x)
+    x = layers.Reshape((config.num_tokens, config.dim_capsules))(x)
+    x = PositionalEmbedding(config.num_tokens, config.dim_capsules)(x)
+    for _ in range(config.num_transformer_layers):
+        x = transformer_block(
+            x,
+            TransformerConfig(
+                projection_dim=config.dim_capsules,
+                num_tokens=config.num_tokens,
+                num_heads=config.num_heads,
+                num_transformer_layers=config.num_transformer_layers,
+                dense_dropout=config.dense_dropout,
+                transformer_dropout=config.transformer_dropout,
+                l2_reg=config.l2_reg,
+                learning_rate=config.learning_rate,
+                batch_size=config.batch_size,
+                epochs=config.epochs,
+                patience=config.patience,
+                focal_gamma=config.focal_gamma,
+                focal_alpha=config.focal_alpha,
+                num_capsules=config.num_capsules,
+                dim_capsules=config.dim_capsules,
+            ),
+        )
+    transformer_out = layers.LayerNormalization(epsilon=1e-6)(x)
+    squashed_tokens = layers.Lambda(
+        lambda tensor: squash(tensor),
+        output_shape=(config.num_tokens, config.dim_capsules),
+        name="hybrid_token_squash",
+    )(transformer_out)
+    digit_caps = DigitCapsuleLayer(
+        num_capsules=config.num_capsules,
+        dim_capsules=config.dim_capsules,
+    )(squashed_tokens)
+    capsule_norms = layers.Lambda(
+        lambda tensor: tf.sqrt(tf.reduce_sum(tf.square(tensor), axis=-1) + tf.keras.backend.epsilon()),
+        output_shape=(config.num_capsules,),
+        name="hybrid_capsule_norms",
+    )(digit_caps)
+    probabilities = layers.Softmax(name="hybrid_capsule_softmax")(capsule_norms)
+    outputs = layers.Lambda(
+        lambda tensor: tensor[:, 1:2],
+        output_shape=(1,),
+        name="csPCa_probability",
+    )(probabilities)
+    model = Model(inputs=inputs, outputs=outputs, name="radiomics_transformer_capsnet")
+    return _compile_binary_deep_model(model, config)
+
+
+def build_model_by_architecture(architecture: str, input_dim: int, config: TransformerConfig) -> Model:
+    if architecture == "transformer":
+        return build_tabular_transformer(input_dim=input_dim, config=config)
+    if architecture == "capsnet":
+        return build_capsnet_model(input_dim=input_dim, config=config)
+    if architecture == "transformer_capsnet":
+        return build_transformer_capsnet_model(input_dim=input_dim, config=config)
+    raise ValueError(f"Unsupported architecture: {architecture}")
+
+
 def load_patient_ids(path: str | None, group_column: str) -> set[str] | None:
     if path is None:
         return None
@@ -323,6 +534,31 @@ def build_split_masks(
     )
 
 
+def build_inner_train_val_masks(
+    df: pd.DataFrame,
+    *,
+    candidate_mask: pd.Series,
+    group_column: str,
+    label_column: str,
+    val_size: float,
+    random_state: int,
+) -> tuple[pd.Series, pd.Series]:
+    """Split an outer-training pool into train/validation groups for early stopping."""
+
+    candidate_df = df.loc[candidate_mask].copy()
+    group_df = group_label_frame(candidate_df, group_column, label_column)
+    train_groups, val_groups = train_test_split(
+        group_df,
+        test_size=val_size,
+        random_state=random_state,
+        stratify=group_df[label_column],
+    )
+    groups = df[group_column].astype(str)
+    train_ids = set(train_groups[group_column])
+    val_ids = set(val_groups[group_column])
+    return candidate_mask & groups.isin(train_ids), candidate_mask & groups.isin(val_ids)
+
+
 def choose_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     fpr, tpr, thresholds = roc_curve(y_true, y_prob)
     finite_mask = np.isfinite(thresholds)
@@ -353,6 +589,27 @@ def compute_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: fl
         "tp": int(tp),
     }
     return metrics
+
+
+def compute_binary_metrics_from_predictions(y_true: np.ndarray, y_pred: np.ndarray, y_prob: np.ndarray) -> dict:
+    """Compute pooled metrics when binary predictions were obtained with fold-specific thresholds."""
+
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    specificity = tn / (tn + fp) if (tn + fp) else np.nan
+    sensitivity = tp / (tp + fn) if (tp + fn) else np.nan
+    return {
+        "auc": roc_auc_score(y_true, y_prob),
+        "accuracy": accuracy_score(y_true, y_pred),
+        "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
+        "f1": f1_score(y_true, y_pred, zero_division=0),
+        "mcc": matthews_corrcoef(y_true, y_pred),
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "tn": int(tn),
+        "fp": int(fp),
+        "fn": int(fn),
+        "tp": int(tp),
+    }
 
 
 def plot_training_history(history, output_path: Path) -> None:
@@ -390,32 +647,18 @@ def plot_roc(y_true: np.ndarray, y_prob: np.ndarray, output_path: Path) -> None:
     plt.close(fig)
 
 
-def main() -> None:
-    args = parse_args()
-    set_reproducibility(args.random_state)
-
-    data_root = PROJECT_ROOT / args.data_pre
-    feature_table = resolve_feature_table_path(PROJECT_ROOT, data_root, args.csv)
-    output_dir = (PROJECT_ROOT / args.output_dir / args.run_name).resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    df = pd.read_csv(feature_table).dropna(subset=[args.label_column, args.group_column]).copy()
-    df[args.group_column] = df[args.group_column].astype(str)
-    df[args.label_column] = df[args.label_column].astype(int)
-
-    train_mask, val_mask, test_mask = build_split_masks(
-        df,
-        group_column=args.group_column,
-        label_column=args.label_column,
-        train_ids_csv=args.train_ids_csv,
-        val_ids_csv=args.val_ids_csv,
-        test_ids_csv=args.test_ids_csv,
-        test_size=args.test_size,
-        val_size=args.val_size,
-        random_state=args.random_state,
-    )
-    if not train_mask.any() or not val_mask.any() or not test_mask.any():
-        raise ValueError("Train, validation, and test splits must all contain samples.")
+def train_and_evaluate_single_split(
+    *,
+    df: pd.DataFrame,
+    args: argparse.Namespace,
+    feature_table: Path,
+    output_dir: Path,
+    train_mask: pd.Series,
+    val_mask: pd.Series,
+    test_mask: pd.Series,
+    fold_label: str,
+) -> tuple[dict, pd.DataFrame, dict]:
+    """Train one Transformer split and return fold metrics plus test predictions."""
 
     X_all = prepare_numeric_radiomics_matrix(df)
     y_all = df[args.label_column].to_numpy(dtype=int)
@@ -461,11 +704,17 @@ def main() -> None:
         epochs=args.epochs,
         patience=args.patience,
     )
-    model = build_tabular_transformer(input_dim=X_train.shape[1], config=config)
+    model = build_model_by_architecture(
+        architecture=args.architecture,
+        input_dim=X_train.shape[1],
+        config=config,
+    )
     (output_dir / "model_summary.txt").write_text(
         "\n".join(
             [
                 f"Model: {model.name}",
+                f"Architecture: {args.architecture}",
+                f"Fold label: {fold_label}",
                 f"Input features: {X_train.shape[1]}",
                 f"Train/val/test samples: {len(y_train)}/{len(y_val)}/{len(y_test)}",
             ]
@@ -501,6 +750,10 @@ def main() -> None:
     for optional_column in ["study_id", "sample_id"]:
         if optional_column in df.columns:
             predictions[optional_column] = df.loc[test_mask, optional_column].values
+    predictions["model_name"] = args.architecture
+    predictions["fold_label"] = fold_label
+    predictions["selected_feature_count"] = len(selected_features)
+    predictions["threshold"] = threshold
     predictions["probability_csPCa"] = test_prob
     predictions["prediction"] = test_pred
     predictions.to_csv(output_dir / "test_predictions.csv", index=False)
@@ -514,22 +767,172 @@ def main() -> None:
     plot_training_history(history, output_dir / "training_curves.png")
     plot_roc(y_test, test_prob, output_dir / "roc_test.png")
 
-    model.save(output_dir / "radiomics_tabular_transformer.keras")
+    model.save(output_dir / f"radiomics_{args.architecture}.keras")
     run_config = {
         "feature_table": str(feature_table),
         "arguments": vars(args),
         "model_config": asdict(config),
         "selection_summary": selection_summary,
         "selected_feature_count": len(selected_features),
+        "architecture": args.architecture,
+        "model_name": model.name,
         "split_sizes": {
             "train": int(train_mask.sum()),
             "validation": int(val_mask.sum()),
             "test": int(test_mask.sum()),
         },
+        "fold_label": fold_label,
     }
     (output_dir / "run_config.json").write_text(
         json.dumps(run_config, indent=2, sort_keys=True),
         encoding="utf-8",
+    )
+
+    return test_metrics, predictions, run_config
+
+
+def main() -> None:
+    args = parse_args()
+    set_reproducibility(args.random_state)
+
+    data_root = PROJECT_ROOT / args.data_pre
+    feature_table = resolve_feature_table_path(PROJECT_ROOT, data_root, args.csv)
+    if args.run_name == "features_all_gland_transformer" and args.architecture != "transformer":
+        args.run_name = f"features_all_gland_{args.architecture}"
+    output_dir = (PROJECT_ROOT / args.output_dir / args.run_name).resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    df = pd.read_csv(feature_table).dropna(subset=[args.label_column, args.group_column]).copy()
+    df[args.group_column] = df[args.group_column].astype(str)
+    df[args.label_column] = df[args.label_column].astype(int)
+    if "sample_id" not in df.columns and {"patient_id", "study_id"}.issubset(df.columns):
+        df["sample_id"] = df["patient_id"].astype(str) + "_" + df["study_id"].astype(str)
+
+    if args.predefined_folds_json:
+        predefined_payload = load_predefined_folds(Path(args.predefined_folds_json).resolve())
+        sample_ids = (
+            df["sample_id"].astype(str).to_numpy()
+            if "sample_id" in df.columns
+            else (df["patient_id"].astype(str) + "_" + df["study_id"].astype(str)).to_numpy()
+        )
+        patient_ids = df["patient_id"].astype(str).to_numpy() if "patient_id" in df.columns else sample_ids
+        study_ids = df["study_id"].astype(str).to_numpy() if "study_id" in df.columns else sample_ids
+        identifiers = resolve_identifier_array(
+            sample_ids=sample_ids,
+            patient_ids=patient_ids,
+            study_ids=study_ids,
+            identifier_type=args.predefined_fold_id_type,
+        )
+        split_definitions = resolve_predefined_folds_to_indices(
+            payload=predefined_payload,
+            identifiers=identifiers,
+        )
+
+        fold_metrics_rows = []
+        prediction_frames = []
+        fold_run_configs = []
+
+        for fold_position, split_definition in enumerate(split_definitions, start=1):
+            fold_name = f"fold_{fold_position:02d}"
+            fold_output_dir = output_dir / fold_name
+            fold_output_dir.mkdir(parents=True, exist_ok=True)
+
+            outer_train_mask = pd.Series(False, index=df.index)
+            outer_test_mask = pd.Series(False, index=df.index)
+            outer_train_mask.iloc[split_definition["train_idx"]] = True
+            outer_test_mask.iloc[split_definition["val_idx"]] = True
+
+            inner_train_mask, inner_val_mask = build_inner_train_val_masks(
+                df,
+                candidate_mask=outer_train_mask,
+                group_column=args.group_column,
+                label_column=args.label_column,
+                val_size=args.val_size,
+                random_state=args.random_state + fold_position - 1,
+            )
+            if not inner_train_mask.any() or not inner_val_mask.any() or not outer_test_mask.any():
+                raise ValueError(
+                    f"{fold_name} produced an empty train/validation/test partition."
+                )
+
+            fold_metrics, fold_predictions, fold_run_config = train_and_evaluate_single_split(
+                df=df,
+                args=args,
+                feature_table=feature_table,
+                output_dir=fold_output_dir,
+                train_mask=inner_train_mask,
+                val_mask=inner_val_mask,
+                test_mask=outer_test_mask,
+                fold_label=fold_name,
+            )
+            fold_metrics_rows.append(
+                {
+                    "fold_index": fold_position,
+                    "fold_label": fold_name,
+                    **fold_metrics,
+                }
+            )
+            fold_predictions.insert(0, "fold_index", fold_position)
+            prediction_frames.append(fold_predictions)
+            fold_run_configs.append(fold_run_config)
+
+        cv_metrics_df = pd.DataFrame(fold_metrics_rows)
+        cv_metrics_df.to_csv(output_dir / "cv_fold_metrics.csv", index=False)
+
+        oof_predictions_df = pd.concat(prediction_frames, ignore_index=True)
+        oof_predictions_df.to_csv(output_dir / "cv_oof_predictions.csv", index=False)
+
+        oof_metrics = compute_binary_metrics_from_predictions(
+            y_true=oof_predictions_df[args.label_column].to_numpy(dtype=int),
+            y_pred=oof_predictions_df["prediction"].to_numpy(dtype=int),
+            y_prob=oof_predictions_df["probability_csPCa"].to_numpy(dtype=float),
+        )
+        summary_payload = {
+            "feature_table": str(feature_table),
+            "n_outer_folds": len(split_definitions),
+            "fold_metric_mean": {
+                column: float(cv_metrics_df[column].mean())
+                for column in cv_metrics_df.columns
+                if column not in {"fold_index", "fold_label"}
+            },
+            "fold_metric_std": {
+                column: float(cv_metrics_df[column].std(ddof=1))
+                for column in cv_metrics_df.columns
+                if column not in {"fold_index", "fold_label"} and len(cv_metrics_df) > 1
+            },
+            "oof_metrics": oof_metrics,
+            "folds": fold_run_configs,
+        }
+        (output_dir / "cv_summary.json").write_text(
+            json.dumps(summary_payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        print(json.dumps(summary_payload["oof_metrics"], indent=2, sort_keys=True))
+        return
+
+    train_mask, val_mask, test_mask = build_split_masks(
+        df,
+        group_column=args.group_column,
+        label_column=args.label_column,
+        train_ids_csv=args.train_ids_csv,
+        val_ids_csv=args.val_ids_csv,
+        test_ids_csv=args.test_ids_csv,
+        test_size=args.test_size,
+        val_size=args.val_size,
+        random_state=args.random_state,
+    )
+    if not train_mask.any() or not val_mask.any() or not test_mask.any():
+        raise ValueError("Train, validation, and test splits must all contain samples.")
+
+    test_metrics, _, _ = train_and_evaluate_single_split(
+        df=df,
+        args=args,
+        feature_table=feature_table,
+        output_dir=output_dir,
+        train_mask=train_mask,
+        val_mask=val_mask,
+        test_mask=test_mask,
+        fold_label="holdout",
     )
 
     print(json.dumps(test_metrics, indent=2, sort_keys=True))

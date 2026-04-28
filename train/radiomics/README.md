@@ -96,6 +96,90 @@ Eso significa que cada clasificador se evalúa en `50` folds de validación y qu
 
 Además, el script genera el plan de folds una sola vez y usa exactamente los mismos folds para todos los modelos. Eso hace que la comparación entre clasificadores sea más justa.
 
+### Comparación final con `5` folds fijos
+
+Si primero usas `5 folds x 10 repeticiones` para elegir el mejor modelo clásico y después quieres compararlo contra modelos de deep learning con un coste de entrenamiento razonable, el repositorio ahora admite una segunda fase con `5` folds externos fijos.
+
+Esto es útil para que:
+
+- el modelo clásico final y el modelo deep learning se evalúen sobre exactamente las mismas particiones externas
+- no tengas que entrenar el deep learning en `50` folds
+- la comparación final sea más defendible metodológicamente
+
+Importante:
+
+- las particiones públicas de PI-CAI no vienen de `picai_prep`
+- vienen de `picai_baseline`
+- si quieres reproducir esos folds, usa `picai_baseline.splits.picai` o `picai_baseline.splits.picai_nnunet`
+
+El script auxiliar [`2_modeling/export_picai_fold_assignments.py`](./2_modeling/export_picai_fold_assignments.py) convierte esos folds al formato local:
+
+```bash
+python train/radiomics/2_modeling/export_picai_fold_assignments.py \
+  --source picai_nnunet \
+  --output results/radiomics/picai_nnunet_5folds.json
+```
+
+`picai_nnunet` suele ser la mejor opción si tu cohorte local contiene solo los casos etiquetados para entrenamiento supervisado.
+
+Después puedes reutilizar esas mismas particiones en el pipeline clásico:
+
+```bash
+python train/radiomics/2_modeling/1_train_and_evaluate.py \
+  --csv features_all_gland.csv \
+  --feature_strategy most_discriminant \
+  --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
+  --predefined_fold_id_type sample_id
+```
+
+Si quieres que esta fase final evalúe solo los `3` mejores modelos clásicos del análisis previo `5x10`, con tuneo anidado de hiperparámetros dentro de cada fold externo:
+
+```bash
+python train/radiomics/2_modeling/1_train_and_evaluate.py \
+  --csv features_all_gland.csv \
+  --feature_strategy most_discriminant \
+  --experiment_name final_5fold_top3_tuned \
+  --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
+  --predefined_fold_id_type sample_id \
+  --model_summary_csv results/radiomics/most_discriminant/gland/aggregated_performance/summary_metrics.csv \
+  --top_k_models 3 \
+  --tune \
+  --tune_n_iter 20 \
+  --tune_inner_splits 3
+```
+
+En ese modo:
+
+- el top `3` se toma del `summary_metrics.csv` previo
+- solo esos `3` modelos se reevalúan en los `5` folds externos
+- cada fold externo rehace la selección de variables usando solo su train fold
+- cada fold externo hace además tuneo anidado de hiperparámetros sobre su propio train fold
+- el resultado sigue siendo una comparación limpia porque la validación externa nunca entra ni en la selección ni en el tuning
+
+Cuando usas `--predefined_folds_json`:
+
+- el script deja de generar `StratifiedGroupKFold` nuevos
+- reutiliza exactamente los folds definidos en el JSON
+- mantiene la selección de características dentro de cada train fold
+- sigue usando el mismo fold plan para todos los clasificadores
+
+El Transformer tabular también puede correr esa comparación externa de `5` folds:
+
+```bash
+python train/radiomics/2_modeling/4_train_tabular_transformer.py \
+  --csv features_all_gland.csv \
+  --run_name features_all_gland_transformer_picai5fold \
+  --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
+  --predefined_fold_id_type sample_id
+```
+
+En ese modo:
+
+- el fold externo actúa como test fold
+- dentro del conjunto de entrenamiento externo se crea una validación interna por grupos
+- esa validación interna se usa solo para early stopping y selección del umbral
+- el rendimiento final se agrega con predicciones `out-of-fold` sobre los `5` test folds externos
+
 ## 4. Cómo se hace la selección de características
 
 Esta es la parte más importante del pipeline y también la que suele generar más confusión.
@@ -252,6 +336,12 @@ Script: [`2_modeling/4_train_tabular_transformer.py`](./2_modeling/4_train_tabul
 
 Este script incorpora deep learning, pero solo después de la extracción radiómica. El modelo recibe una fila tabular por estudio y no accede a imágenes, volúmenes ni tensores de RM.
 
+Arquitecturas disponibles ahora mismo:
+
+- `transformer`
+- `capsnet`
+- `transformer_capsnet`
+
 El flujo es:
 
 1. Cargar la tabla concatenada de características.
@@ -263,6 +353,16 @@ El flujo es:
 7. Seleccionar el umbral de decisión en validación.
 8. Evaluar en test y guardar métricas, predicciones, curvas y modelo `.keras`.
 
+Por defecto el script usa:
+
+- `--feature_selection most_discriminant`
+
+Eso significa que el modelo deep learning no usa automáticamente todas las variables. Usa el subconjunto seleccionado solo con el `train` del split o fold actual. Si cambias a:
+
+- `--feature_selection none`
+
+entonces sí usará todas las variables numéricas radiómicas disponibles tras el filtrado habitual de metadatos.
+
 Ejemplo:
 
 ```bash
@@ -271,8 +371,96 @@ python train/radiomics/2_modeling/4_train_tabular_transformer.py \
   --data_pre artifacts/radiomics \
   --output_dir results/radiomics/deep_tabular_transformer \
   --run_name gland_transformer \
+  --architecture transformer \
   --feature_selection most_discriminant
 ```
+
+Ejemplo con `CapsNet`:
+
+```bash
+python train/radiomics/2_modeling/4_train_tabular_transformer.py \
+  --csv features_all_gland.csv \
+  --output_dir results/radiomics/deep_tabular_models \
+  --run_name gland_capsnet \
+  --architecture capsnet \
+  --feature_selection most_discriminant
+```
+
+Ejemplo con híbrido `Transformer + CapsNet`:
+
+```bash
+python train/radiomics/2_modeling/4_train_tabular_transformer.py \
+  --csv features_all_gland.csv \
+  --output_dir results/radiomics/deep_tabular_models \
+  --run_name gland_transformer_capsnet \
+  --architecture transformer_capsnet \
+  --feature_selection most_discriminant
+```
+
+### Ejecutar varios modelos deep learning de una vez
+
+Script: [`2_modeling/4_run_deep_tabular_suite.py`](./2_modeling/4_run_deep_tabular_suite.py)
+
+Sirve para lanzar varias arquitecturas sobre exactamente los mismos folds y guardar un `manifest` reutilizable para la comparación final.
+
+Ejemplo:
+
+```bash
+python train/radiomics/2_modeling/4_run_deep_tabular_suite.py \
+  --csv features_all_gland.csv \
+  --output_dir results/radiomics/deep_tabular_models \
+  --run_prefix final_5fold \
+  --architectures transformer capsnet transformer_capsnet \
+  --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
+  --predefined_fold_id_type sample_id
+```
+
+Esto genera además un archivo como:
+
+- `results/radiomics/deep_tabular_models/final_5fold_suite_manifest.json`
+
+## 8. Comparación final ML vs DL con predicciones `out-of-fold`
+
+Script: [`2_modeling/5_compare_oof_models.py`](./2_modeling/5_compare_oof_models.py)
+
+Este script compara los mejores modelos clásicos de radiómica contra uno o varios modelos deep learning a partir de predicciones `OOF` ya alineadas sobre los mismos casos.
+
+Entradas esperadas:
+
+- ML clásico: `oof_predictions_aggregated_*.csv` generado por [`1_train_and_evaluate.py`](./2_modeling/1_train_and_evaluate.py)
+- DL tabular: `cv_oof_predictions.csv` generado por [`4_train_tabular_transformer.py`](./2_modeling/4_train_tabular_transformer.py) en modo de folds predefinidos
+
+Ejemplo usando el top `3` de ML y el `manifest` de la suite DL:
+
+```bash
+python train/radiomics/2_modeling/5_compare_oof_models.py \
+  --ml_oof_csv results/radiomics/most_discriminant/gland/final_5fold/oof_predictions_aggregated_features_all_gland_most_discriminant.csv \
+  --ml_summary_csv results/radiomics/most_discriminant/gland/final_5fold/aggregated_performance/summary_metrics.csv \
+  --top_k_ml 3 \
+  --dl_manifest_json results/radiomics/deep_tabular_models/final_5fold_suite_manifest.json \
+  --outdir results/radiomics/final_ml_vs_dl
+```
+
+También puedes fijar manualmente los clasificadores de ML:
+
+```bash
+python train/radiomics/2_modeling/5_compare_oof_models.py \
+  --ml_oof_csv results/radiomics/most_discriminant/gland/final_5fold/oof_predictions_aggregated_features_all_gland_most_discriminant.csv \
+  --ml_classifier "SVM" \
+  --ml_classifier "Logistic Regression" \
+  --ml_classifier "Random Forest" \
+  --dl_oof_csv transformer=results/radiomics/deep_tabular_models/final_5fold_transformer/cv_oof_predictions.csv \
+  --dl_oof_csv capsnet=results/radiomics/deep_tabular_models/final_5fold_capsnet/cv_oof_predictions.csv \
+  --dl_oof_csv transformer_capsnet=results/radiomics/deep_tabular_models/final_5fold_transformer_capsnet/cv_oof_predictions.csv \
+  --outdir results/radiomics/final_ml_vs_dl
+```
+
+Salidas principales:
+
+- `model_metrics.csv`
+- `pairwise_comparisons.csv`
+- `comparison_summary.txt`
+- `roc_comparison.png`
 
 ## Salidas principales
 

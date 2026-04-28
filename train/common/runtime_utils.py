@@ -7,8 +7,12 @@ import random
 from pathlib import Path
 
 import numpy as np
-import torch
 from sklearn.model_selection import StratifiedGroupKFold
+
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
 
 def find_project_root(start_path: str | Path) -> Path:
@@ -86,19 +90,20 @@ def setup_logger(
 
 
 def set_global_seed(seed: int, deterministic: bool = True) -> None:
-    """Seed Python, NumPy, and PyTorch for reproducible experiments."""
+    """Seed Python, NumPy, and PyTorch when available for reproducible experiments."""
 
     os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
+    if torch is not None:
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(seed)
+            torch.cuda.manual_seed_all(seed)
 
-    if deterministic:
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cudnn.benchmark = False
+        if deterministic:
+            torch.backends.cudnn.deterministic = True
+            torch.backends.cudnn.benchmark = False
 
 
 def make_grouped_splits(
@@ -149,6 +154,128 @@ def load_splits(split_file: str | Path) -> dict:
 
     with Path(split_file).open("r", encoding="utf-8") as file_handle:
         return json.load(file_handle)
+
+
+def load_predefined_folds(split_file: str | Path) -> dict:
+    """Load a predefined fold-assignment payload from disk."""
+
+    return load_splits(split_file)
+
+
+def resolve_identifier_array(
+    *,
+    sample_ids: list[str] | np.ndarray,
+    patient_ids: list[str] | np.ndarray,
+    study_ids: list[str] | np.ndarray,
+    identifier_type: str,
+) -> np.ndarray:
+    """Resolve the identifier array used to map predefined folds onto local rows."""
+
+    normalized_identifier_type = identifier_type.strip().lower()
+    if normalized_identifier_type in {"sample_id", "patient_study", "patient_id_study_id"}:
+        return np.asarray(sample_ids).astype(str)
+    if normalized_identifier_type == "patient_id":
+        return np.asarray(patient_ids).astype(str)
+    if normalized_identifier_type == "study_id":
+        return np.asarray(study_ids).astype(str)
+
+    raise ValueError(
+        "identifier_type must be one of: "
+        "'sample_id', 'patient_study', 'patient_id_study_id', 'patient_id', 'study_id'."
+    )
+
+
+def _extract_fold_identifier_list(fold_entry: dict, key_candidates: list[str]) -> list[str]:
+    """Return the first matching identifier list from a fold definition."""
+
+    for key in key_candidates:
+        if key in fold_entry:
+            values = fold_entry[key]
+            if not isinstance(values, list):
+                raise ValueError(f"Fold field '{key}' must be a list of identifiers.")
+            return [str(value) for value in values]
+    raise KeyError(f"Fold definition is missing any of the required keys: {key_candidates}")
+
+
+def resolve_predefined_folds_to_indices(
+    *,
+    payload: dict,
+    identifiers: list[str] | np.ndarray,
+) -> list[dict[str, object]]:
+    """Map predefined fold identifiers onto row indices of the local dataset."""
+
+    identifiers_array = np.asarray(identifiers).astype(str)
+    identifier_to_indices: dict[str, list[int]] = {}
+    for row_index, identifier in enumerate(identifiers_array):
+        identifier_to_indices.setdefault(identifier, []).append(int(row_index))
+
+    folds = payload.get("folds") or payload.get("splits")
+    if not isinstance(folds, list) or not folds:
+        raise ValueError("The predefined fold file must contain a non-empty 'folds' or 'splits' list.")
+
+    resolved_folds: list[dict[str, object]] = []
+    for position, fold_entry in enumerate(folds, start=1):
+        if not isinstance(fold_entry, dict):
+            raise ValueError("Each fold entry must be a JSON object.")
+
+        train_ids = _extract_fold_identifier_list(
+            fold_entry,
+            ["train_ids", "train_subjects", "train_subject_list", "train"],
+        )
+        val_ids = _extract_fold_identifier_list(
+            fold_entry,
+            ["val_ids", "validation_ids", "val_subjects", "validation_subjects", "val", "validation"],
+        )
+
+        unknown_train_ids = sorted({identifier for identifier in train_ids if identifier not in identifier_to_indices})
+        unknown_val_ids = sorted({identifier for identifier in val_ids if identifier not in identifier_to_indices})
+        if unknown_train_ids or unknown_val_ids:
+            message_parts = []
+            if unknown_train_ids:
+                message_parts.append(
+                    f"unknown train identifiers (first 10): {unknown_train_ids[:10]}"
+                )
+            if unknown_val_ids:
+                message_parts.append(
+                    f"unknown validation identifiers (first 10): {unknown_val_ids[:10]}"
+                )
+            raise ValueError(
+                f"Fold {position} contains identifiers not present in the local dataset: "
+                + "; ".join(message_parts)
+            )
+
+        train_indices = sorted(
+            row_index
+            for identifier in train_ids
+            for row_index in identifier_to_indices[identifier]
+        )
+        val_indices = sorted(
+            row_index
+            for identifier in val_ids
+            for row_index in identifier_to_indices[identifier]
+        )
+        overlap = sorted(set(train_indices).intersection(val_indices))
+        if overlap:
+            raise ValueError(
+                f"Fold {position} contains overlapping train/validation rows. "
+                f"First overlapping row indices: {overlap[:10]}"
+            )
+
+        resolved_folds.append(
+            {
+                "fold_index": int(fold_entry.get("fold_index", fold_entry.get("split_index", position))),
+                "Repeat": int(fold_entry.get("Repeat", fold_entry.get("repeat", 1))),
+                "fold_in_repeat": int(
+                    fold_entry.get("fold_in_repeat", fold_entry.get("local_fold", position))
+                ),
+                "train_idx": np.asarray(train_indices, dtype=int),
+                "val_idx": np.asarray(val_indices, dtype=int),
+                "train_ids": train_ids,
+                "val_ids": val_ids,
+            }
+        )
+
+    return resolved_folds
 
 
 def load_or_create_splits(

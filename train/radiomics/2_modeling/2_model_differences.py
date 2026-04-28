@@ -21,6 +21,9 @@ try:
 except ModuleNotFoundError:
     plt.style.use("default")
 
+matplotlib.rcParams["text.usetex"] = False
+plt.rcParams["text.usetex"] = False
+
 
 def main():
     """Load fold metrics, run Friedman/Wilcoxon tests, and export English reports and plots."""

@@ -31,6 +31,9 @@ try:
 except ModuleNotFoundError:
     plt.style.use("default")
 
+matplotlib.rcParams["text.usetex"] = False
+plt.rcParams["text.usetex"] = False
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(

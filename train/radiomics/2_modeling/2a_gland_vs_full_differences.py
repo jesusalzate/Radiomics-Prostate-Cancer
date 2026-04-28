@@ -20,6 +20,9 @@ try:
 except ModuleNotFoundError:
     plt.style.use("default")
 
+matplotlib.rcParams["text.usetex"] = False
+plt.rcParams["text.usetex"] = False
+
 
 def one_sided_from_two_sided(statistic, p_two_sided, direction=+1):
     """Convert a two-sided Wilcoxon p-value into a one-sided p-value."""

@@ -275,6 +275,21 @@ def choose_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     return float(thresholds[finite_mask][int(np.argmax(youden))])
 
 
+def summarize_probabilities(y_prob: np.ndarray, prefix: str) -> dict:
+    y_prob = np.asarray(y_prob, dtype=float)
+    return {
+        f"{prefix}_prob_min": float(np.min(y_prob)),
+        f"{prefix}_prob_p05": float(np.percentile(y_prob, 5)),
+        f"{prefix}_prob_p25": float(np.percentile(y_prob, 25)),
+        f"{prefix}_prob_median": float(np.median(y_prob)),
+        f"{prefix}_prob_mean": float(np.mean(y_prob)),
+        f"{prefix}_prob_p75": float(np.percentile(y_prob, 75)),
+        f"{prefix}_prob_p95": float(np.percentile(y_prob, 95)),
+        f"{prefix}_prob_max": float(np.max(y_prob)),
+        f"{prefix}_positive_rate_at_0_5": float(np.mean(y_prob >= 0.5)),
+    }
+
+
 def compute_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict:
     y_pred = (y_prob >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
@@ -288,6 +303,7 @@ def compute_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: fl
         "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
         "f1": f1_score(y_true, y_pred, zero_division=0),
         "mcc": matthews_corrcoef(y_true, y_pred),
+        "positive_prediction_rate": float(np.mean(y_pred == 1)),
         "sensitivity": sensitivity,
         "specificity": specificity,
         "tn": int(tn),
@@ -310,6 +326,7 @@ def compute_binary_metrics_from_predictions(y_true: np.ndarray, y_pred: np.ndarr
         "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
         "f1": f1_score(y_true, y_pred, zero_division=0),
         "mcc": matthews_corrcoef(y_true, y_pred),
+        "positive_prediction_rate": float(np.mean(y_pred == 1)),
         "sensitivity": sensitivity,
         "specificity": specificity,
         "tn": int(tn),
@@ -517,13 +534,23 @@ def train_and_evaluate_single_split(
     )
 
     val_prob = predict_positive_probability(model, args.architecture, X_val)
+    val_youden_threshold = choose_threshold(y_val, val_prob)
     if args.threshold_strategy == "fixed_0.5":
         threshold = 0.5
     else:
-        threshold = choose_threshold(y_val, val_prob)
+        threshold = val_youden_threshold
     test_prob = predict_positive_probability(model, args.architecture, X_test)
     test_metrics = compute_binary_metrics(y_test, test_prob, threshold)
+    test_metrics_val_youden = compute_binary_metrics(y_test, test_prob, val_youden_threshold)
     test_pred = (test_prob >= threshold).astype(int)
+    probability_summary = {
+        **summarize_probabilities(val_prob, "val"),
+        **summarize_probabilities(test_prob, "test"),
+        "selected_threshold": float(threshold),
+        "validation_youden_threshold": float(val_youden_threshold),
+        "threshold_strategy": args.threshold_strategy,
+        "test_metrics_at_validation_youden": test_metrics_val_youden,
+    }
 
     predictions = df.loc[test_mask, [args.group_column, args.label_column]].copy()
     for optional_column in ["study_id", "sample_id"]:
@@ -544,8 +571,22 @@ def train_and_evaluate_single_split(
         f"balanced_accuracy={test_metrics['balanced_accuracy']:.4f} | "
         f"f1={test_metrics['f1']:.4f} | mcc={test_metrics['mcc']:.4f}"
     )
+    log_progress(
+        f"{fold_label} | probability diagnostics | "
+        f"val_median={probability_summary['val_prob_median']:.4f} | "
+        f"val_p95={probability_summary['val_prob_p95']:.4f} | "
+        f"test_median={probability_summary['test_prob_median']:.4f} | "
+        f"test_p95={probability_summary['test_prob_p95']:.4f} | "
+        f"test_positive_rate_at_0.5={probability_summary['test_positive_rate_at_0_5']:.4f} | "
+        f"validation_youden_threshold={val_youden_threshold:.4f} | "
+        f"test_f1_at_validation_youden={test_metrics_val_youden['f1']:.4f}"
+    )
 
     pd.DataFrame([test_metrics]).to_csv(output_dir / "test_metrics.csv", index=False)
+    (output_dir / "threshold_diagnostics.json").write_text(
+        json.dumps(probability_summary, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
     (output_dir / "classification_report.txt").write_text(
         classification_report(y_test, test_pred, labels=[0, 1], digits=4),
         encoding="utf-8",
@@ -562,6 +603,7 @@ def train_and_evaluate_single_split(
         "selection_summary": selection_summary,
         "selection_source": selection_source,
         "selected_feature_count": len(selected_features),
+        "threshold_diagnostics": probability_summary,
         "architecture": args.architecture,
         "model_name": model.name,
         "split_sizes": {

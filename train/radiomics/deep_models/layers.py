@@ -17,6 +17,7 @@ def squash(inputs, axis: int = -1):
     return scale * inputs / ops.sqrt(squared_norm + EPSILON)
 
 
+@tf.keras.utils.register_keras_serializable(package="RadiomicsDeepModels")
 class PositionalEmbedding(layers.Layer):
     """Learned positional embedding for tabular feature tokens."""
 
@@ -45,6 +46,7 @@ class PositionalEmbedding(layers.Layer):
         return config
 
 
+@tf.keras.utils.register_keras_serializable(package="RadiomicsDeepModels")
 class AttentionPooling1D(layers.Layer):
     """Attention pooling over transformed radiomics tokens."""
 
@@ -65,6 +67,27 @@ class AttentionPooling1D(layers.Layer):
         return config
 
 
+@tf.keras.utils.register_keras_serializable(package="RadiomicsDeepModels")
+class FeatureSlice(layers.Layer):
+    """Select a fixed set of tabular feature columns inside a Keras graph."""
+
+    def __init__(self, indices: list[int], **kwargs):
+        super().__init__(**kwargs)
+        self.indices = list(indices)
+
+    def call(self, inputs):
+        return tf.gather(inputs, self.indices, axis=1)
+
+    def compute_output_shape(self, input_shape):
+        return (input_shape[0], len(self.indices))
+
+    def get_config(self):
+        config = super().get_config()
+        config.update({"indices": self.indices})
+        return config
+
+
+@tf.keras.utils.register_keras_serializable(package="RadiomicsDeepModels")
 class DigitCapsuleLayer(layers.Layer):
     """Dynamic-routing digit capsule layer."""
 
@@ -132,6 +155,7 @@ class DigitCapsuleLayer(layers.Layer):
         return config
 
 
+@tf.keras.utils.register_keras_serializable(package="RadiomicsDeepModels")
 class Length(layers.Layer):
     """Capsule length layer."""
 

@@ -128,7 +128,7 @@ Deep model code is modularized under `train/radiomics/deep_models/`:
 - `losses.py`: binary focal loss and CapsNet margin loss
 - `architectures.py`: model builders and architecture-specific target/prediction helpers
 
-The `transformer` architecture matches the reference tabular Transformer notebook and uses binary focal loss with `gamma=2.0` and `alpha=0.35`.
+The `transformer` architecture extends the reference tabular Transformer with a residual dense encoder, `LayerNormalization`, semantic radiomics tokens when feature names are available, token dropout, and `AdamW`. By default it uses binary focal loss with `gamma=2.0` and `alpha=0.35`; use `--transformer_loss bce` to run a binary cross-entropy ablation with balanced class weights.
 
 The `capsnet` architecture matches the reference CapsNet notebook and uses CapsNet margin loss with one-hot targets, capsule lengths as outputs, `routing_iterations=3`, `CategoricalAccuracy`, `AUC`, and balanced class weights during training.
 

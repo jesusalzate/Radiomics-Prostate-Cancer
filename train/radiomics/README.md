@@ -131,14 +131,27 @@ python train/radiomics/2_modeling/4_run_deep_tabular_suite.py \
 
 ## Deep Model Losses
 
-The Transformer matches the reference tabular Transformer implementation:
+The Transformer extends the reference tabular Transformer implementation:
 
-- dense encoder to `(8, 8)` tokens
+- residual dense encoder with `LayerNormalization`
+- semantic tokens by modality and radiomics family when feature names are available
+- learned fallback tokenization when semantic grouping is not available
 - learned positional embedding
 - two Transformer blocks
+- token dropout
 - attention pooling
+- `AdamW` with cosine-decay warm restarts
 - sigmoid binary output
-- binary focal loss with `gamma=2.0` and `alpha=0.35`
+- binary focal loss with `gamma=2.0` and `alpha=0.35` by default
+
+You can run a loss ablation with binary cross-entropy and balanced class weights:
+
+```bash
+python train/radiomics/2_modeling/4_train_tabular_transformer.py \
+  --csv features_all_gland.csv \
+  --architecture transformer \
+  --transformer_loss bce
+```
 
 The CapsNet matches the reference CapsNet implementation:
 

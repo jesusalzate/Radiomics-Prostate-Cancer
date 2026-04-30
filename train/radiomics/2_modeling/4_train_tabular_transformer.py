@@ -114,6 +114,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--patience", type=int, default=50)
     parser.add_argument(
+        "--transformer_loss",
+        choices=["focal", "bce"],
+        default="focal",
+        help=(
+            "Loss for the transformer architecture. 'focal' uses binary focal loss; "
+            "'bce' uses binary cross-entropy with balanced class weights."
+        ),
+    )
+    parser.add_argument(
         "--threshold_strategy",
         choices=["youden_val", "fixed_0.5"],
         default="youden_val",
@@ -445,11 +454,13 @@ def train_and_evaluate_single_split(
         batch_size=args.batch_size,
         epochs=args.epochs,
         patience=args.patience,
+        transformer_loss=args.transformer_loss,
     )
     model = build_model_by_architecture(
         architecture=args.architecture,
         input_dim=X_train.shape[1],
         config=config,
+        feature_names=selected_features,
     )
     (output_dir / "model_summary.txt").write_text(
         "\n".join(
@@ -487,11 +498,13 @@ def train_and_evaluate_single_split(
         num_classes=config.num_classes,
     )
     class_weight = None
-    if args.architecture == "capsnet":
+    if args.architecture == "capsnet" or (
+        args.architecture == "transformer" and args.transformer_loss == "bce"
+    ):
         classes = np.unique(y_train)
         weights = compute_class_weight("balanced", classes=classes, y=y_train)
         class_weight = {int(class_id): float(weight) for class_id, weight in zip(classes, weights)}
-        log_progress(f"{fold_label} | capsnet class weights: {class_weight}")
+        log_progress(f"{fold_label} | balanced class weights: {class_weight}")
     history = model.fit(
         X_train,
         y_train_model,

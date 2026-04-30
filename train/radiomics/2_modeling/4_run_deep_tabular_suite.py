@@ -54,6 +54,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--patience", type=int, default=50)
     parser.add_argument(
+        "--transformer_loss",
+        choices=["focal", "bce"],
+        default="focal",
+        help="Loss to use for the transformer architecture.",
+    )
+    parser.add_argument(
         "--threshold_strategy",
         choices=["youden_val", "fixed_0.5"],
         default="youden_val",
@@ -115,6 +121,8 @@ def main() -> None:
             str(args.epochs),
             "--patience",
             str(args.patience),
+            "--transformer_loss",
+            args.transformer_loss,
             "--threshold_strategy",
             args.threshold_strategy,
         ]

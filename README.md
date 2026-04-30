@@ -1,59 +1,45 @@
 # Prostate Radiomics ML
 
-Repositorio enfocado solo en radiómica de cáncer de próstata. Conserva el flujo de extracción de características radiómicas desde RM multiparamétrica, el modelado clásico de machine learning y un modelo de deep learning tabular que aprende sobre las características radiómicas ya extraídas.
+This repository contains the radiomics-only branch of the prostate cancer project. It keeps the feature extraction workflow for multiparametric prostate MRI, classical machine learning models, and deep tabular models trained only on extracted radiomics features.
 
-No contiene entrenamiento de redes sobre imágenes, cortes, volúmenes, parches, CNNs, ViTs de imagen ni explicabilidad de modelos de imagen.
+It does not train neural networks on image slices, volumes, patches, CNN feature maps, image ViTs, or segmentation tensors.
 
-## Objetivo clínico
+## Clinical Task
 
-La tarea principal es clasificar cáncer de próstata clínicamente significativo (`csPCa`), definido como `ISUP >= 2`, a partir de características radiómicas extraídas de:
+The main task is binary classification of clinically significant prostate cancer (`csPCa`), defined as `ISUP >= 2`, from radiomics features extracted from:
 
 - `T2W`
 - `ADC`
 - `DWI/HBV`
 
-La etiqueta binaria esperada en las tablas de modelado es `label`:
+The expected modeling label is `label`:
 
-- `0`: no clínicamente significativo
-- `1`: clínicamente significativo
+- `0`: not clinically significant
+- `1`: clinically significant
 
-## Estructura
+## Repository Layout
 
 ```text
 ├── artifacts/
-│   ├── data.csv                         # Cohorte con rutas, metadatos y etiqueta
-│   └── radiomics/                       # CSVs de características radiómicas por modalidad
-├── data_analysis/                       # Notebooks descriptivos de cohorte e imágenes
-├── data_structuring/                    # Ensamblaje inicial de la tabla de cohorte
+│   ├── data.csv                         # Cohort table with paths, metadata, and labels
+│   └── radiomics/                       # Radiomics feature CSVs
+├── data_analysis/                       # Cohort and image descriptive notebooks
+├── data_structuring/                    # Initial cohort table assembly
 ├── results/
-│   └── radiomics/                       # Resultados de modelos radiómicos
+│   └── radiomics/                       # Radiomics model outputs
 ├── train/
-│   ├── common/                          # Utilidades compartidas
+│   ├── common/                          # Shared data and runtime utilities
 │   └── radiomics/
-│       ├── 1_extract_radiomics/         # PyRadiomics y parámetros por modalidad
-│       └── 2_modeling/                  # ML clásico, comparación y Transformer tabular
-├── requirements.txt                     # Pipeline base: extracción + ML clásico
-└── requirements-deep-radiomics.txt      # Opcional: deep learning tabular con TensorFlow
+│       ├── 1_extract_radiomics/         # PyRadiomics extraction code and parameters
+│       ├── 2_modeling/                  # Classical ML, comparisons, and DL runners
+│       └── deep_models/                 # Modular deep tabular model definitions
+├── requirements.txt                     # Base extraction and classical ML pipeline
+└── requirements-deep-radiomics.txt      # Optional TensorFlow deep tabular models
 ```
 
-## Datos conservados
+## Installation
 
-El repositorio mantiene los datos necesarios para reproducir el flujo radiómico:
-
-- `artifacts/data.csv`
-- `artifacts/radiomics/features_t2_gland.csv`
-- `artifacts/radiomics/features_adc_gland.csv`
-- `artifacts/radiomics/features_dwi_gland.csv`
-- `artifacts/radiomics/features_t2_full.csv`
-- `artifacts/radiomics/features_adc_full.csv`
-- `artifacts/radiomics/features_dwi_full.csv`
-- resultados existentes bajo `results/radiomics/`
-
-Los artefactos de deep learning sobre imagen fueron eliminados.
-
-## Instalación
-
-Pipeline base:
+Base pipeline:
 
 ```bash
 python -m venv .venv
@@ -61,23 +47,23 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Modelo tabular de deep learning sobre radiómica:
+Deep tabular radiomics models:
 
 ```bash
 pip install -r requirements-deep-radiomics.txt
 ```
 
-## Flujo principal
+## Main Workflow
 
-### 1. Extraer características radiómicas
+### 1. Extract Radiomics Features
 
 ```bash
 python train/radiomics/1_extract_radiomics/extract_radiomics.py
 ```
 
-Genera un CSV por modalidad y región (`gland` y `full`) dentro de `artifacts/radiomics/`.
+This writes one CSV per modality and spatial region under `artifacts/radiomics/`.
 
-### 2. Concatenar modalidades
+### 2. Concatenate Modalities
 
 ```bash
 python train/radiomics/2_modeling/0_build_concatenated_feature_table.py \
@@ -87,7 +73,7 @@ python train/radiomics/2_modeling/0_build_concatenated_feature_table.py \
   --output artifacts/radiomics/concatenated_data/features_all_gland.csv
 ```
 
-### 3. Entrenar y evaluar modelos clásicos
+### 3. Train Classical ML Models
 
 ```bash
 python train/radiomics/2_modeling/1_train_and_evaluate.py \
@@ -96,58 +82,67 @@ python train/radiomics/2_modeling/1_train_and_evaluate.py \
   --results_base results/radiomics \
   --feature_strategy most_discriminant \
   --n_splits 5 \
-  --n_repeats 10 \
-  --bootstrap_iterations 1000 \
-  --ci_level 0.95 \
-  --classification_threshold 0.5 \
-  --min_features 10 \
-  --max_features_cap 60 \
-  --samples_per_feature 25 \
-  --minority_samples_per_feature 8 \
-  --fdr_alpha 0.05 \
-  --correlation_threshold 0.90 \
-  --selection_n_jobs 8 \
-  --search_n_jobs 8 \
-  --search_iterations 50 \
-  --calculate_differences \
-  --fine_tune_best_model
+  --n_repeats 10
 ```
 
-### 4. Entrenar Transformer tabular sobre radiómica
+### 4. Train Deep Tabular Models
 
-Este modelo usa solo la matriz de características radiómicas. La selección de variables, imputación y escalado se ajustan únicamente con train para evitar leakage.
+The deep models receive only the radiomics feature matrix. Feature selection, imputation, and scaling are fitted only on the training split to avoid leakage.
+
+Available architectures:
+
+- `transformer`
+- `capsnet`
+- `transformer_capsnet`
 
 ```bash
 python train/radiomics/2_modeling/4_train_tabular_transformer.py \
   --csv features_all_gland.csv \
   --data_pre artifacts/radiomics \
-  --output_dir results/radiomics/deep_tabular_transformer \
+  --output_dir results/radiomics/deep_tabular_models \
   --run_name gland_transformer \
+  --architecture transformer \
   --feature_selection most_discriminant \
   --epochs 300 \
   --batch_size 16 \
   --patience 50
 ```
 
-Si ya tienes particiones externas con columna `patient_id`, puedes fijarlas:
+Run the full deep tabular suite:
 
 ```bash
-python train/radiomics/2_modeling/4_train_tabular_transformer.py \
+python train/radiomics/2_modeling/4_run_deep_tabular_suite.py \
   --csv features_all_gland.csv \
-  --train_ids_csv splits/train_df.csv \
-  --val_ids_csv splits/val_df.csv \
-  --test_ids_csv splits/test_df.csv
+  --data_pre artifacts/radiomics \
+  --output_dir results/radiomics/deep_tabular_models \
+  --run_prefix final_5fold \
+  --architectures transformer capsnet transformer_capsnet
 ```
 
-## Garantías metodológicas
+## Deep Model Implementation
 
-- Separación por `patient_id` para reducir leakage entre estudios del mismo paciente.
-- Selección de características dentro de cada fold o split de entrenamiento.
-- Imputación y escalado ajustados solo con train.
-- Comparación clásica con folds compartidos entre clasificadores.
-- Reutilización opcional de folds externos fijos para la comparación final entre ML clásico y deep learning.
-- Deep learning permitido solo como modelo tabular sobre variables radiómicas.
+Deep model code is modularized under `train/radiomics/deep_models/`:
 
-## Documentación adicional
+- `config.py`: shared `DeepTabularConfig`
+- `layers.py`: positional embedding, attention pooling, capsule routing, capsule length, Transformer blocks
+- `losses.py`: binary focal loss and CapsNet margin loss
+- `architectures.py`: model builders and architecture-specific target/prediction helpers
 
-La metodología detallada está en [`train/radiomics/README.md`](train/radiomics/README.md).
+The `transformer` architecture matches the reference tabular Transformer notebook and uses binary focal loss with `gamma=2.0` and `alpha=0.35`.
+
+The `capsnet` architecture matches the reference CapsNet notebook and uses CapsNet margin loss with one-hot targets, capsule lengths as outputs, `routing_iterations=3`, `CategoricalAccuracy`, `AUC`, and balanced class weights during training.
+
+The `transformer_capsnet` architecture remains the project hybrid benchmark and uses a binary probability output with focal loss.
+
+## Methodological Safeguards
+
+- Patient-level splitting by `patient_id`.
+- Feature selection is performed inside each training split or fold.
+- Imputation and scaling are fitted only on training data.
+- Classical ML models share the same fold plan for fair comparison.
+- Deep tabular models can reuse predefined folds and shared fold-wise feature plans.
+- Deep learning is restricted to tabular radiomics variables.
+
+## Additional Documentation
+
+The detailed radiomics workflow is documented in [`train/radiomics/README.md`](train/radiomics/README.md).

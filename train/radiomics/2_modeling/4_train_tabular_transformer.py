@@ -15,7 +15,7 @@ import json
 import logging
 import random
 import sys
-from dataclasses import asdict, dataclass
+from dataclasses import asdict
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
@@ -44,10 +44,8 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
-from tensorflow.keras import layers
+from sklearn.utils.class_weight import compute_class_weight
 from tensorflow.keras.callbacks import EarlyStopping
-from tensorflow.keras.models import Model
-from tensorflow.keras.optimizers import Adam
 
 from train.common.radiomics_utils import (
     prepare_numeric_radiomics_matrix,
@@ -62,124 +60,14 @@ from train.common.runtime_utils import (
     resolve_shared_features_for_fold,
     setup_logger,
 )
+from train.radiomics.deep_models import (
+    DeepTabularConfig,
+    build_model_by_architecture,
+    predict_positive_probability,
+    prepare_targets_for_architecture,
+)
 
 LOGGER = logging.getLogger("radiomics_dl")
-
-
-@dataclass(frozen=True)
-class TransformerConfig:
-    projection_dim: int = 8
-    num_tokens: int = 8
-    num_heads: int = 2
-    num_transformer_layers: int = 2
-    dense_dropout: float = 0.4
-    transformer_dropout: float = 0.2
-    l2_reg: float = 2e-3
-    learning_rate: float = 5e-4
-    batch_size: int = 16
-    epochs: int = 300
-    patience: int = 50
-    focal_gamma: float = 2.0
-    focal_alpha: float = 0.35
-    num_capsules: int = 2
-    dim_capsules: int = 16
-
-
-class PositionalEmbedding(layers.Layer):
-    """Learned positional embedding for tabular feature tokens."""
-
-    def __init__(self, num_tokens: int, projection_dim: int, **kwargs):
-        super().__init__(**kwargs)
-        self.num_tokens = num_tokens
-        self.projection_dim = projection_dim
-        self.pos_embedding = self.add_weight(
-            name="pos_embedding",
-            shape=(1, num_tokens, projection_dim),
-            initializer="glorot_uniform",
-            trainable=True,
-        )
-
-    def call(self, inputs):
-        return inputs + self.pos_embedding
-
-    def get_config(self):
-        config = super().get_config()
-        config.update(
-            {
-                "num_tokens": self.num_tokens,
-                "projection_dim": self.projection_dim,
-            }
-        )
-        return config
-
-
-class AttentionPooling1D(layers.Layer):
-    """Attention pooling over transformed radiomics tokens."""
-
-    def __init__(self, units: int, **kwargs):
-        super().__init__(**kwargs)
-        self.units = units
-        self.dense_tanh = layers.Dense(units, activation="tanh")
-        self.dense_score = layers.Dense(1)
-
-    def call(self, inputs):
-        token_scores = self.dense_score(self.dense_tanh(inputs))
-        token_weights = tf.nn.softmax(token_scores, axis=1)
-        return tf.reduce_sum(inputs * token_weights, axis=1)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update({"units": self.units})
-        return config
-
-
-class DigitCapsuleLayer(layers.Layer):
-    """Dynamic-routing capsule layer for binary radiomics classification."""
-
-    def __init__(self, num_capsules: int, dim_capsules: int, routing_iterations: int = 2, **kwargs):
-        super().__init__(**kwargs)
-        self.num_capsules = num_capsules
-        self.dim_capsules = dim_capsules
-        self.routing_iterations = routing_iterations
-
-    def build(self, input_shape):
-        self.num_input_caps = input_shape[1]
-        self.input_dim = input_shape[2]
-        self.W = self.add_weight(
-            name="capsule_kernel",
-            shape=(1, self.num_input_caps, self.num_capsules, self.dim_capsules, self.input_dim),
-            initializer="glorot_uniform",
-            trainable=True,
-        )
-
-    def call(self, inputs):
-        batch_size = tf.shape(inputs)[0]
-        u = tf.expand_dims(inputs, axis=2)
-        u = tf.expand_dims(u, axis=-1)
-        tiled_weights = tf.tile(self.W, [batch_size, 1, 1, 1, 1])
-        u_hat = tf.matmul(tiled_weights, u)
-        u_hat = tf.squeeze(u_hat, axis=-1)
-        routing_logits = tf.zeros((batch_size, self.num_input_caps, self.num_capsules, 1), dtype=inputs.dtype)
-
-        for _ in range(self.routing_iterations):
-            coupling = tf.nn.softmax(routing_logits, axis=2)
-            capsule_inputs = tf.reduce_sum(coupling * u_hat, axis=1, keepdims=True)
-            capsule_outputs = squash(capsule_inputs)
-            agreement = tf.reduce_sum(u_hat * capsule_outputs, axis=-1, keepdims=True)
-            routing_logits = routing_logits + agreement
-
-        return tf.squeeze(capsule_outputs, axis=1)
-
-    def get_config(self):
-        config = super().get_config()
-        config.update(
-            {
-                "num_capsules": self.num_capsules,
-                "dim_capsules": self.dim_capsules,
-                "routing_iterations": self.routing_iterations,
-            }
-        )
-        return config
 
 
 def parse_args() -> argparse.Namespace:
@@ -275,235 +163,6 @@ def summarize_binary_labels(labels: np.ndarray) -> str:
     positives = int(np.sum(labels == 1))
     negatives = int(np.sum(labels == 0))
     return f"n={len(labels)} neg={negatives} pos={positives}"
-
-
-def focal_loss(gamma: float = 2.0, alpha: float = 0.35):
-    """Binary focal loss for imbalanced radiomics cohorts."""
-
-    def loss_fn(y_true, y_pred):
-        y_true = tf.cast(y_true, tf.float32)
-        y_pred = tf.clip_by_value(y_pred, 1e-7, 1 - 1e-7)
-        bce = -y_true * tf.math.log(y_pred) - (1 - y_true) * tf.math.log(1 - y_pred)
-        p_t = y_true * y_pred + (1 - y_true) * (1 - y_pred)
-        alpha_t = y_true * alpha + (1 - y_true) * (1 - alpha)
-        return tf.reduce_mean(alpha_t * tf.pow(1 - p_t, gamma) * bce)
-
-    return loss_fn
-
-
-def squash(inputs, axis: int = -1):
-    """Squashing non-linearity used by capsule networks."""
-
-    squared_norm = tf.reduce_sum(tf.square(inputs), axis=axis, keepdims=True)
-    scale = squared_norm / (1.0 + squared_norm)
-    return scale * inputs / tf.sqrt(squared_norm + 1e-7)
-
-
-def mlp_block(x, hidden_units: list[int], dropout_rate: float):
-    for units in hidden_units:
-        x = layers.Dense(units, activation="gelu")(x)
-        x = layers.Dropout(dropout_rate)(x)
-    return x
-
-
-def transformer_block(x, config: TransformerConfig):
-    x1 = layers.LayerNormalization(epsilon=1e-6)(x)
-    attention_output = layers.MultiHeadAttention(
-        num_heads=config.num_heads,
-        key_dim=config.projection_dim,
-        dropout=config.transformer_dropout,
-    )(x1, x1)
-    x2 = layers.Add()([attention_output, x])
-
-    x3 = layers.LayerNormalization(epsilon=1e-6)(x2)
-    x4 = mlp_block(
-        x3,
-        hidden_units=[config.projection_dim * 2, config.projection_dim],
-        dropout_rate=config.transformer_dropout,
-    )
-    return layers.Add()([x4, x2])
-
-
-def build_tabular_transformer(input_dim: int, config: TransformerConfig) -> Model:
-    token_width = config.num_tokens * config.projection_dim
-
-    inputs = layers.Input(shape=(input_dim,), name="radiomics_features")
-    x = layers.Dense(16, activation="gelu")(inputs)
-    x = layers.Dense(
-        32,
-        activation="gelu",
-        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
-    )(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(config.dense_dropout)(x)
-
-    x = layers.Dense(
-        token_width,
-        activation="gelu",
-        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
-    )(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(config.dense_dropout)(x)
-
-    x = layers.Reshape((config.num_tokens, config.projection_dim))(x)
-    x = PositionalEmbedding(config.num_tokens, config.projection_dim)(x)
-    for _ in range(config.num_transformer_layers):
-        x = transformer_block(x, config)
-
-    x = layers.LayerNormalization(epsilon=1e-6)(x)
-    x = AttentionPooling1D(units=32)(x)
-    x = layers.Dropout(0.3)(x)
-    outputs = layers.Dense(1, activation="sigmoid", name="csPCa_probability")(x)
-
-    model = Model(inputs=inputs, outputs=outputs, name="radiomics_tabular_transformer")
-    lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
-        initial_learning_rate=config.learning_rate,
-        first_decay_steps=50,
-        t_mul=2.0,
-        m_mul=0.9,
-    )
-    model.compile(
-        optimizer=Adam(learning_rate=lr_schedule),
-        loss=focal_loss(gamma=config.focal_gamma, alpha=config.focal_alpha),
-        metrics=["accuracy", tf.keras.metrics.AUC(name="auc")],
-    )
-    return model
-
-
-def _compile_binary_deep_model(model: Model, config: TransformerConfig) -> Model:
-    lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
-        initial_learning_rate=config.learning_rate,
-        first_decay_steps=50,
-        t_mul=2.0,
-        m_mul=0.9,
-    )
-    model.compile(
-        optimizer=Adam(learning_rate=lr_schedule),
-        loss=focal_loss(gamma=config.focal_gamma, alpha=config.focal_alpha),
-        metrics=["accuracy", tf.keras.metrics.AUC(name="auc")],
-    )
-    return model
-
-
-def build_capsnet_model(input_dim: int, config: TransformerConfig) -> Model:
-    inputs = layers.Input(shape=(input_dim,), name="radiomics_features")
-    x = layers.Dense(16, activation="gelu")(inputs)
-    x = layers.Dense(32, activation="gelu")(x)
-    x = layers.Dense(
-        64,
-        activation="gelu",
-        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
-    )(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(config.dense_dropout)(x)
-    x = layers.Dense(
-        config.num_tokens * config.dim_capsules,
-        activation="gelu",
-        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
-    )(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(config.dense_dropout)(x)
-    x = layers.Reshape((config.num_tokens, config.dim_capsules))(x)
-    squashed_tokens = layers.Lambda(
-        lambda tensor: squash(tensor),
-        output_shape=(config.num_tokens, config.dim_capsules),
-        name="capsnet_token_squash",
-    )(x)
-    digit_caps = DigitCapsuleLayer(
-        num_capsules=config.num_capsules,
-        dim_capsules=config.dim_capsules,
-    )(squashed_tokens)
-    capsule_norms = layers.Lambda(
-        lambda tensor: tf.sqrt(tf.reduce_sum(tf.square(tensor), axis=-1) + tf.keras.backend.epsilon()),
-        output_shape=(config.num_capsules,),
-        name="capsule_norms",
-    )(digit_caps)
-    probabilities = layers.Softmax(name="capsule_softmax")(capsule_norms)
-    outputs = layers.Lambda(
-        lambda tensor: tensor[:, 1:2],
-        output_shape=(1,),
-        name="csPCa_probability",
-    )(probabilities)
-    model = Model(inputs=inputs, outputs=outputs, name="radiomics_capsnet")
-    return _compile_binary_deep_model(model, config)
-
-
-def build_transformer_capsnet_model(input_dim: int, config: TransformerConfig) -> Model:
-    token_width = config.num_tokens * config.dim_capsules
-
-    inputs = layers.Input(shape=(input_dim,), name="radiomics_features")
-    x = layers.Dense(16, activation="gelu")(inputs)
-    x = layers.Dense(32, activation="gelu")(x)
-    x = layers.Dense(
-        64,
-        activation="gelu",
-        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
-    )(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(config.dense_dropout)(x)
-    x = layers.Dense(
-        token_width,
-        activation="gelu",
-        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
-    )(x)
-    x = layers.BatchNormalization()(x)
-    x = layers.Dropout(config.dense_dropout)(x)
-    x = layers.Reshape((config.num_tokens, config.dim_capsules))(x)
-    x = PositionalEmbedding(config.num_tokens, config.dim_capsules)(x)
-    for _ in range(config.num_transformer_layers):
-        x = transformer_block(
-            x,
-            TransformerConfig(
-                projection_dim=config.dim_capsules,
-                num_tokens=config.num_tokens,
-                num_heads=config.num_heads,
-                num_transformer_layers=config.num_transformer_layers,
-                dense_dropout=config.dense_dropout,
-                transformer_dropout=config.transformer_dropout,
-                l2_reg=config.l2_reg,
-                learning_rate=config.learning_rate,
-                batch_size=config.batch_size,
-                epochs=config.epochs,
-                patience=config.patience,
-                focal_gamma=config.focal_gamma,
-                focal_alpha=config.focal_alpha,
-                num_capsules=config.num_capsules,
-                dim_capsules=config.dim_capsules,
-            ),
-        )
-    transformer_out = layers.LayerNormalization(epsilon=1e-6)(x)
-    squashed_tokens = layers.Lambda(
-        lambda tensor: squash(tensor),
-        output_shape=(config.num_tokens, config.dim_capsules),
-        name="hybrid_token_squash",
-    )(transformer_out)
-    digit_caps = DigitCapsuleLayer(
-        num_capsules=config.num_capsules,
-        dim_capsules=config.dim_capsules,
-    )(squashed_tokens)
-    capsule_norms = layers.Lambda(
-        lambda tensor: tf.sqrt(tf.reduce_sum(tf.square(tensor), axis=-1) + tf.keras.backend.epsilon()),
-        output_shape=(config.num_capsules,),
-        name="hybrid_capsule_norms",
-    )(digit_caps)
-    probabilities = layers.Softmax(name="hybrid_capsule_softmax")(capsule_norms)
-    outputs = layers.Lambda(
-        lambda tensor: tensor[:, 1:2],
-        output_shape=(1,),
-        name="csPCa_probability",
-    )(probabilities)
-    model = Model(inputs=inputs, outputs=outputs, name="radiomics_transformer_capsnet")
-    return _compile_binary_deep_model(model, config)
-
-
-def build_model_by_architecture(architecture: str, input_dim: int, config: TransformerConfig) -> Model:
-    if architecture == "transformer":
-        return build_tabular_transformer(input_dim=input_dim, config=config)
-    if architecture == "capsnet":
-        return build_capsnet_model(input_dim=input_dim, config=config)
-    if architecture == "transformer_capsnet":
-        return build_transformer_capsnet_model(input_dim=input_dim, config=config)
-    raise ValueError(f"Unsupported architecture: {architecture}")
 
 
 def load_patient_ids(path: str | None, group_column: str) -> set[str] | None:
@@ -782,7 +441,7 @@ def train_and_evaluate_single_split(
         f"selected_features={len(selected_features)} | selection_source={selection_source}"
     )
 
-    config = TransformerConfig(
+    config = DeepTabularConfig(
         batch_size=args.batch_size,
         epochs=args.epochs,
         patience=args.patience,
@@ -817,22 +476,39 @@ def train_and_evaluate_single_split(
         f"{fold_label} | training {args.architecture} | input_dim={X_train.shape[1]} | "
         f"batch_size={config.batch_size} | epochs={config.epochs} | patience={config.patience}"
     )
+    y_train_model = prepare_targets_for_architecture(
+        args.architecture,
+        y_train,
+        num_classes=config.num_classes,
+    )
+    y_val_model = prepare_targets_for_architecture(
+        args.architecture,
+        y_val,
+        num_classes=config.num_classes,
+    )
+    class_weight = None
+    if args.architecture == "capsnet":
+        classes = np.unique(y_train)
+        weights = compute_class_weight("balanced", classes=classes, y=y_train)
+        class_weight = {int(class_id): float(weight) for class_id, weight in zip(classes, weights)}
+        log_progress(f"{fold_label} | capsnet class weights: {class_weight}")
     history = model.fit(
         X_train,
-        y_train,
-        validation_data=(X_val, y_val),
+        y_train_model,
+        validation_data=(X_val, y_val_model),
         epochs=config.epochs,
         batch_size=config.batch_size,
         callbacks=[early_stop],
+        class_weight=class_weight,
         verbose=2,
     )
 
-    val_prob = model.predict(X_val, verbose=0).flatten()
+    val_prob = predict_positive_probability(model, args.architecture, X_val)
     if args.threshold_strategy == "fixed_0.5":
         threshold = 0.5
     else:
         threshold = choose_threshold(y_val, val_prob)
-    test_prob = model.predict(X_test, verbose=0).flatten()
+    test_prob = predict_positive_probability(model, args.architecture, X_test)
     test_metrics = compute_binary_metrics(y_test, test_prob, threshold)
     test_pred = (test_prob >= threshold).astype(int)
 

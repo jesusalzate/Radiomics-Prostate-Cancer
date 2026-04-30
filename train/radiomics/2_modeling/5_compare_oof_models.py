@@ -15,10 +15,13 @@ from scipy.stats import ttest_rel
 from sklearn.metrics import (
     accuracy_score,
     auc,
+    average_precision_score,
     balanced_accuracy_score,
+    brier_score_loss,
     confusion_matrix,
     f1_score,
     matthews_corrcoef,
+    precision_recall_curve,
     roc_auc_score,
     roc_curve,
 )
@@ -91,6 +94,12 @@ def parse_args() -> argparse.Namespace:
         default="sample_id",
         choices=["sample_id", "patient_id", "study_id"],
         help="Primary key used to align predictions across models.",
+    )
+    parser.add_argument(
+        "--classification_threshold",
+        type=float,
+        default=0.5,
+        help="Common threshold used to recompute all threshold-dependent metrics.",
     )
     parser.add_argument(
         "--n_bootstrap",
@@ -179,18 +188,22 @@ def normalize_dl_oof(path: Path, id_column: str) -> pd.DataFrame:
     return normalized.sort_values(id_column).reset_index(drop=True)
 
 
-def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+def compute_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict[str, float]:
+    y_pred = (y_prob >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
     specificity = tn / (tn + fp) if (tn + fp) else np.nan
     sensitivity = tp / (tp + fn) if (tp + fn) else np.nan
     return {
         "auc": roc_auc_score(y_true, y_prob),
+        "ap": average_precision_score(y_true, y_prob),
         "accuracy": accuracy_score(y_true, y_pred),
         "balanced_accuracy": balanced_accuracy_score(y_true, y_pred),
         "f1": f1_score(y_true, y_pred, zero_division=0),
         "mcc": matthews_corrcoef(y_true, y_pred),
         "sensitivity": sensitivity,
         "specificity": specificity,
+        "brier_score": brier_score_loss(y_true, y_prob),
+        "positive_prediction_rate": float(np.mean(y_pred)),
     }
 
 
@@ -198,14 +211,13 @@ def bootstrap_metric_difference(
     *,
     y_true: np.ndarray,
     prob_a: np.ndarray,
-    pred_a: np.ndarray,
     prob_b: np.ndarray,
-    pred_b: np.ndarray,
+    threshold: float,
     n_bootstrap: int,
     seed: int,
 ) -> dict[str, dict[str, float]]:
     rng = np.random.default_rng(seed)
-    metric_names = ["auc", "accuracy", "balanced_accuracy", "f1", "mcc", "sensitivity", "specificity"]
+    metric_names = ["auc", "ap", "accuracy", "balanced_accuracy", "f1", "mcc", "sensitivity", "specificity", "brier_score"]
     distributions = {metric_name: [] for metric_name in metric_names}
     sample_indices = np.arange(len(y_true))
 
@@ -213,8 +225,8 @@ def bootstrap_metric_difference(
         bootstrap_idx = rng.choice(sample_indices, size=len(sample_indices), replace=True)
         if len(np.unique(y_true[bootstrap_idx])) < 2:
             continue
-        metrics_a = compute_metrics(y_true[bootstrap_idx], prob_a[bootstrap_idx], pred_a[bootstrap_idx])
-        metrics_b = compute_metrics(y_true[bootstrap_idx], prob_b[bootstrap_idx], pred_b[bootstrap_idx])
+        metrics_a = compute_metrics(y_true[bootstrap_idx], prob_a[bootstrap_idx], threshold)
+        metrics_b = compute_metrics(y_true[bootstrap_idx], prob_b[bootstrap_idx], threshold)
         for metric_name in metric_names:
             distributions[metric_name].append(metrics_a[metric_name] - metrics_b[metric_name])
 
@@ -247,6 +259,42 @@ def plot_roc_curves(model_frames: dict[str, pd.DataFrame], output_path: Path) ->
     ax.set_xlabel("False Positive Rate")
     ax.set_ylabel("True Positive Rate")
     ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_pr_curves(model_frames: dict[str, pd.DataFrame], output_path: Path) -> None:
+    fig, ax = plt.subplots(figsize=(8, 6))
+    for model_name, model_df in model_frames.items():
+        precision, recall, _ = precision_recall_curve(model_df["true_label"], model_df["probability"])
+        ap_value = average_precision_score(model_df["true_label"], model_df["probability"])
+        ax.plot(recall, precision, label=f"{model_name} (AP={ap_value:.3f})")
+    prevalence = next(iter(model_frames.values()))["true_label"].mean()
+    ax.axhline(prevalence, linestyle="--", color="gray", label=f"Prevalence={prevalence:.3f}")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_metric_heatmap(metrics_df: pd.DataFrame, output_path: Path) -> None:
+    metric_columns = ["auc", "ap", "balanced_accuracy", "f1", "mcc", "sensitivity", "specificity", "brier_score"]
+    heatmap_df = metrics_df.set_index("model")[metric_columns]
+    fig, ax = plt.subplots(figsize=(9, max(4, 0.45 * len(heatmap_df))))
+    sns_palette = "viridis"
+    try:
+        import seaborn as sns
+
+        sns.heatmap(heatmap_df, annot=True, fmt=".3f", cmap=sns_palette, linewidths=0.4, ax=ax)
+    except ModuleNotFoundError:
+        image = ax.imshow(heatmap_df.to_numpy(dtype=float), aspect="auto", cmap=sns_palette)
+        ax.set_xticks(np.arange(len(metric_columns)), labels=metric_columns, rotation=45, ha="right")
+        ax.set_yticks(np.arange(len(heatmap_df)), labels=heatmap_df.index)
+        fig.colorbar(image, ax=ax)
+    ax.set_title("OOF Model Metric Summary")
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -319,7 +367,7 @@ def main() -> None:
                 **compute_metrics(
                     aligned_df["true_label"].to_numpy(dtype=int),
                     aligned_df["probability"].to_numpy(dtype=float),
-                    aligned_df["prediction"].to_numpy(dtype=int),
+                    threshold=args.classification_threshold,
                 ),
             }
         )
@@ -337,18 +385,17 @@ def main() -> None:
         ml_aligned = aligned_frames[ml_model_name]
         y_true = ml_aligned["true_label"].to_numpy(dtype=int)
         prob_ml = ml_aligned["probability"].to_numpy(dtype=float)
-        pred_ml = ml_aligned["prediction"].to_numpy(dtype=int)
+        pred_ml = (prob_ml >= args.classification_threshold).astype(int)
 
         for dl_model_name in dl_model_names:
             aligned_df = aligned_frames[dl_model_name]
             prob_dl = aligned_df["probability"].to_numpy(dtype=float)
-            pred_dl = aligned_df["prediction"].to_numpy(dtype=int)
+            pred_dl = (prob_dl >= args.classification_threshold).astype(int)
             diff_summary = bootstrap_metric_difference(
                 y_true=y_true,
                 prob_a=prob_ml,
-                pred_a=pred_ml,
                 prob_b=prob_dl,
-                pred_b=pred_dl,
+                threshold=args.classification_threshold,
                 n_bootstrap=args.n_bootstrap,
                 seed=args.seed,
             )
@@ -366,6 +413,9 @@ def main() -> None:
                     "auc_mean_difference_ml_minus_candidate": diff_summary["auc"]["mean_difference"],
                     "auc_ci_low": diff_summary["auc"]["ci_low"],
                     "auc_ci_high": diff_summary["auc"]["ci_high"],
+                    "ap_mean_difference_ml_minus_candidate": diff_summary["ap"]["mean_difference"],
+                    "ap_ci_low": diff_summary["ap"]["ci_low"],
+                    "ap_ci_high": diff_summary["ap"]["ci_high"],
                     "balanced_accuracy_mean_difference_ml_minus_candidate": diff_summary["balanced_accuracy"][
                         "mean_difference"
                     ],
@@ -374,6 +424,9 @@ def main() -> None:
                     "mcc_mean_difference_ml_minus_candidate": diff_summary["mcc"]["mean_difference"],
                     "mcc_ci_low": diff_summary["mcc"]["ci_low"],
                     "mcc_ci_high": diff_summary["mcc"]["ci_high"],
+                    "brier_score_mean_difference_ml_minus_candidate": diff_summary["brier_score"]["mean_difference"],
+                    "brier_score_ci_low": diff_summary["brier_score"]["ci_low"],
+                    "brier_score_ci_high": diff_summary["brier_score"]["ci_high"],
                 }
             )
 
@@ -382,6 +435,8 @@ def main() -> None:
                     f"{ml_model_name} vs {dl_model_name}",
                     f"  AUC diff (ML - candidate): {diff_summary['auc']['mean_difference']:.4f} "
                     f"[{diff_summary['auc']['ci_low']:.4f}, {diff_summary['auc']['ci_high']:.4f}]",
+                    f"  AP diff (ML - candidate): {diff_summary['ap']['mean_difference']:.4f} "
+                    f"[{diff_summary['ap']['ci_low']:.4f}, {diff_summary['ap']['ci_high']:.4f}]",
                     f"  Balanced accuracy diff (ML - candidate): "
                     f"{diff_summary['balanced_accuracy']['mean_difference']:.4f} "
                     f"[{diff_summary['balanced_accuracy']['ci_low']:.4f}, "
@@ -396,10 +451,13 @@ def main() -> None:
     pd.DataFrame(comparison_rows).to_csv(output_dir / "pairwise_comparisons.csv", index=False)
     (output_dir / "comparison_summary.txt").write_text("\n".join(summary_lines), encoding="utf-8")
     plot_roc_curves(aligned_frames, output_dir / "roc_comparison.png")
+    plot_pr_curves(aligned_frames, output_dir / "pr_comparison.png")
+    plot_metric_heatmap(metrics_df, output_dir / "metric_heatmap.png")
 
     metadata = {
         "aligned_id_column": args.id_column,
         "aligned_n_cases": len(shared_ids),
+        "classification_threshold": args.classification_threshold,
         "selected_ml_classifiers": selected_ml_classifiers,
         "models": list(aligned_frames.keys()),
     }

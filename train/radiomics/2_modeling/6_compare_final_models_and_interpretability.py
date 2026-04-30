@@ -24,6 +24,7 @@ from sklearn.metrics import (
     accuracy_score,
     average_precision_score,
     balanced_accuracy_score,
+    brier_score_loss,
     cohen_kappa_score,
     confusion_matrix,
     f1_score,
@@ -70,9 +71,37 @@ from train.common.runtime_utils import (
     resolve_shared_features_for_fold,
     setup_logger,
 )
+try:
+    from train.radiomics.deep_models.layers import (
+        AttentionPooling1D,
+        DigitCapsuleLayer,
+        FeatureSlice,
+        PositionalEmbedding,
+    )
+except ModuleNotFoundError:
+    AttentionPooling1D = DigitCapsuleLayer = FeatureSlice = PositionalEmbedding = None
 
 
 LOGGER = setup_logger("final_benchmark_interpretability")
+
+PRIMARY_METRICS = ["auroc", "ap", "picai_score", "balanced_accuracy", "f1", "mcc"]
+ALL_METRICS = [
+    "auroc",
+    "ap",
+    "picai_score",
+    "accuracy",
+    "balanced_accuracy",
+    "f1",
+    "mcc",
+    "kappa",
+    "sensitivity",
+    "specificity",
+    "ppv",
+    "npv",
+    "log_loss",
+    "brier_score",
+    "positive_prediction_rate",
+]
 
 
 def log_progress(message: str) -> None:
@@ -125,9 +154,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--classification_threshold", type=float, default=0.5)
     parser.add_argument("--permutation_repeats", type=int, default=20)
     parser.add_argument("--permutation_seed", type=int, default=42)
+    parser.add_argument("--n_bootstrap", type=int, default=5000)
+    parser.add_argument("--bootstrap_seed", type=int, default=42)
+    parser.add_argument("--n_permutation_tests", type=int, default=5000)
     parser.add_argument("--top_features", type=int, default=20)
     parser.add_argument("--max_native_samples", type=int, default=200)
     parser.add_argument("--ig_steps", type=int, default=64)
+    parser.add_argument(
+        "--skip_interpretability",
+        action="store_true",
+        help="Only run the ML-vs-DL benchmark and comparison plots; skip SHAP, IG, and permutation importance.",
+    )
     parser.add_argument(
         "--reuse_existing_interpretability",
         action="store_true",
@@ -182,6 +219,10 @@ def compute_case_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: floa
         loss = log_loss(y_true, y_prob, labels=[0, 1])
     except ValueError:
         loss = np.nan
+    try:
+        brier = brier_score_loss(y_true, y_prob)
+    except ValueError:
+        brier = np.nan
 
     return {
         "auroc": auroc,
@@ -197,6 +238,13 @@ def compute_case_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: floa
         "ppv": ppv,
         "npv": npv,
         "log_loss": loss,
+        "brier_score": brier,
+        "positive_prediction_rate": float(np.mean(y_pred)),
+        "prevalence": float(np.mean(y_true)),
+        "probability_mean": float(np.mean(y_prob)),
+        "probability_median": float(np.median(y_prob)),
+        "probability_p05": float(np.percentile(y_prob, 5)),
+        "probability_p95": float(np.percentile(y_prob, 95)),
         "tn": int(tn),
         "fp": int(fp),
         "fn": int(fn),
@@ -249,6 +297,63 @@ def load_dl_fold_predictions(run_dir: Path, id_column: str) -> dict[int, dict]:
             "y_pred_original": fold_df["prediction"].to_numpy(dtype=int),
         }
     return by_fold
+
+
+def validate_fold_prediction_alignment(
+    model_fold_predictions: dict[str, dict[int, dict]],
+    *,
+    output_path: Path,
+) -> None:
+    """Require every benchmarked model to contain the same folds, cases, and labels."""
+    if len(model_fold_predictions) < 2:
+        return
+    reference_model = next(iter(model_fold_predictions))
+    reference_payload = model_fold_predictions[reference_model]
+    reference_folds = set(reference_payload)
+    validation_rows = []
+
+    for model_name, fold_predictions in model_fold_predictions.items():
+        model_folds = set(fold_predictions)
+        if model_folds != reference_folds:
+            raise ValueError(
+                f"Fold mismatch for {model_name}. "
+                f"Expected {sorted(reference_folds)}, got {sorted(model_folds)}."
+            )
+        for fold_index in sorted(reference_folds):
+            reference_fold = reference_payload[fold_index]
+            current_fold = fold_predictions[fold_index]
+            reference_ids = np.asarray(reference_fold["sample_ids"]).astype(str)
+            current_ids = np.asarray(current_fold["sample_ids"]).astype(str)
+            reference_labels = np.asarray(reference_fold["y_true"], dtype=int)
+            current_labels = np.asarray(current_fold["y_true"], dtype=int)
+            if set(reference_ids) != set(current_ids):
+                raise ValueError(
+                    f"Case-set mismatch for {model_name}, fold {fold_index}. "
+                    "All models must be evaluated on the same cases."
+                )
+            reference_label_map = dict(zip(reference_ids, reference_labels))
+            current_label_map = dict(zip(current_ids, current_labels))
+            mismatched_labels = [
+                sample_id
+                for sample_id in reference_ids
+                if int(reference_label_map[sample_id]) != int(current_label_map[sample_id])
+            ]
+            if mismatched_labels:
+                raise ValueError(
+                    f"Label mismatch for {model_name}, fold {fold_index}; "
+                    f"first mismatched case: {mismatched_labels[0]}"
+                )
+            validation_rows.append(
+                {
+                    "model_name": model_name,
+                    "fold_index": fold_index,
+                    "n_cases": int(len(current_ids)),
+                    "n_positive": int(current_labels.sum()),
+                    "n_negative": int(len(current_labels) - current_labels.sum()),
+                }
+            )
+
+    pd.DataFrame(validation_rows).to_csv(output_path, index=False)
 
 
 def build_metric_rows(
@@ -377,6 +482,154 @@ def compare_models_foldwise(fold_metrics_df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def compute_metric_value(y_true: np.ndarray, y_prob: np.ndarray, threshold: float, metric_name: str) -> float:
+    return float(compute_case_metrics(y_true, y_prob, threshold)[metric_name])
+
+
+def paired_bootstrap_metric_differences(
+    *,
+    y_true: np.ndarray,
+    prob_a: np.ndarray,
+    prob_b: np.ndarray,
+    threshold: float,
+    metric_names: list[str],
+    n_bootstrap: int,
+    seed: int,
+) -> dict[str, dict[str, float]]:
+    rng = np.random.default_rng(seed)
+    sample_indices = np.arange(len(y_true))
+    distributions = {metric_name: [] for metric_name in metric_names}
+    for _ in range(n_bootstrap):
+        bootstrap_idx = rng.choice(sample_indices, size=len(sample_indices), replace=True)
+        if len(np.unique(y_true[bootstrap_idx])) < 2:
+            continue
+        for metric_name in metric_names:
+            value_a = compute_metric_value(y_true[bootstrap_idx], prob_a[bootstrap_idx], threshold, metric_name)
+            value_b = compute_metric_value(y_true[bootstrap_idx], prob_b[bootstrap_idx], threshold, metric_name)
+            if np.isfinite(value_a) and np.isfinite(value_b):
+                distributions[metric_name].append(value_a - value_b)
+
+    summaries = {}
+    for metric_name, values in distributions.items():
+        if values:
+            summaries[metric_name] = {
+                "mean_difference_a_minus_b": float(np.mean(values)),
+                "ci_low": float(np.percentile(values, 2.5)),
+                "ci_high": float(np.percentile(values, 97.5)),
+                "n_success": int(len(values)),
+            }
+        else:
+            summaries[metric_name] = {
+                "mean_difference_a_minus_b": np.nan,
+                "ci_low": np.nan,
+                "ci_high": np.nan,
+                "n_success": 0,
+            }
+    return summaries
+
+
+def paired_permutation_p_value(
+    *,
+    y_true: np.ndarray,
+    prob_a: np.ndarray,
+    prob_b: np.ndarray,
+    threshold: float,
+    metric_name: str,
+    n_permutations: int,
+    seed: int,
+) -> float:
+    observed = compute_metric_value(y_true, prob_a, threshold, metric_name) - compute_metric_value(
+        y_true,
+        prob_b,
+        threshold,
+        metric_name,
+    )
+    if not np.isfinite(observed):
+        return np.nan
+    rng = np.random.default_rng(seed)
+    extreme_count = 0
+    for _ in range(n_permutations):
+        swap_mask = rng.random(len(y_true)) < 0.5
+        perm_a = prob_a.copy()
+        perm_b = prob_b.copy()
+        perm_a[swap_mask], perm_b[swap_mask] = perm_b[swap_mask], perm_a[swap_mask]
+        permuted = compute_metric_value(y_true, perm_a, threshold, metric_name) - compute_metric_value(
+            y_true,
+            perm_b,
+            threshold,
+            metric_name,
+        )
+        if np.isfinite(permuted) and abs(permuted) >= abs(observed):
+            extreme_count += 1
+    return float((extreme_count + 1) / (n_permutations + 1))
+
+
+def build_pairwise_case_comparisons(
+    pooled_predictions_df: pd.DataFrame,
+    *,
+    threshold: float,
+    n_bootstrap: int,
+    bootstrap_seed: int,
+    n_permutation_tests: int,
+) -> pd.DataFrame:
+    rows = []
+    model_names = pooled_predictions_df["model_name"].drop_duplicates().tolist()
+    metric_names = PRIMARY_METRICS + ["log_loss", "brier_score", "sensitivity", "specificity"]
+    for i, model_a in enumerate(model_names):
+        df_a = pooled_predictions_df[pooled_predictions_df["model_name"] == model_a].copy()
+        df_a = df_a[["fold_index", "sample_id", "true_label", "probability"]].rename(
+            columns={"true_label": "true_label_a", "probability": "probability_a"}
+        )
+        for model_b in model_names[i + 1 :]:
+            df_b = pooled_predictions_df[pooled_predictions_df["model_name"] == model_b].copy()
+            df_b = df_b[["fold_index", "sample_id", "true_label", "probability"]].rename(
+                columns={"true_label": "true_label_b", "probability": "probability_b"}
+            )
+            aligned = df_a.merge(df_b, on=["fold_index", "sample_id"], how="inner", validate="one_to_one")
+            if aligned.empty:
+                continue
+            if not np.array_equal(aligned["true_label_a"].to_numpy(int), aligned["true_label_b"].to_numpy(int)):
+                raise ValueError(f"Label mismatch after pairwise alignment: {model_a} vs {model_b}")
+
+            y_true = aligned["true_label_a"].to_numpy(dtype=int)
+            prob_a = aligned["probability_a"].to_numpy(dtype=float)
+            prob_b = aligned["probability_b"].to_numpy(dtype=float)
+            diff_summary = paired_bootstrap_metric_differences(
+                y_true=y_true,
+                prob_a=prob_a,
+                prob_b=prob_b,
+                threshold=threshold,
+                metric_names=metric_names,
+                n_bootstrap=n_bootstrap,
+                seed=bootstrap_seed + i,
+            )
+            for metric_name in metric_names:
+                value_a = compute_metric_value(y_true, prob_a, threshold, metric_name)
+                value_b = compute_metric_value(y_true, prob_b, threshold, metric_name)
+                rows.append(
+                    {
+                        "model_a": model_a,
+                        "model_b": model_b,
+                        "metric": metric_name,
+                        "n_cases": int(len(aligned)),
+                        "value_a": value_a,
+                        "value_b": value_b,
+                        "observed_difference_a_minus_b": value_a - value_b,
+                        **diff_summary[metric_name],
+                        "paired_permutation_p_value": paired_permutation_p_value(
+                            y_true=y_true,
+                            prob_a=prob_a,
+                            prob_b=prob_b,
+                            threshold=threshold,
+                            metric_name=metric_name,
+                            n_permutations=n_permutation_tests,
+                            seed=bootstrap_seed + i + len(rows),
+                        ),
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
 def plot_metric_by_fold(fold_metrics_df: pd.DataFrame, metric_name: str, output_path: Path) -> None:
     plot_df = fold_metrics_df[["model_name", "fold_index", metric_name]].copy()
     plot_df["fold_label"] = plot_df["fold_index"].apply(lambda value: f"Fold {int(value)}")
@@ -414,6 +667,163 @@ def plot_pooled_metric_bars(pooled_metrics_df: pd.DataFrame, metric_name: str, o
     ax.set_xlabel(metric_name.replace("_", " ").title())
     ax.set_ylabel("Model")
     ax.set_title(f"Pooled {metric_name.replace('_', ' ').title()} Comparison")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_metric_ranking_with_bootstrap(
+    pooled_metrics_df: pd.DataFrame,
+    pairwise_case_df: pd.DataFrame,
+    *,
+    reference_model: str,
+    metric_name: str,
+    output_path: Path,
+) -> None:
+    if pooled_metrics_df.empty:
+        return
+    plot_df = pooled_metrics_df[["model_name", "model_family", metric_name]].copy()
+    plot_df = plot_df.sort_values(metric_name, ascending=metric_name in {"log_loss", "brier_score"})
+    plot_df["ci_low"] = np.nan
+    plot_df["ci_high"] = np.nan
+
+    for row_index, row in plot_df.iterrows():
+        model_name = row["model_name"]
+        if model_name == reference_model:
+            plot_df.loc[row_index, ["ci_low", "ci_high"]] = row[metric_name]
+            continue
+        pair_row = pairwise_case_df[
+            (pairwise_case_df["metric"] == metric_name)
+            & (
+                ((pairwise_case_df["model_a"] == model_name) & (pairwise_case_df["model_b"] == reference_model))
+                | ((pairwise_case_df["model_a"] == reference_model) & (pairwise_case_df["model_b"] == model_name))
+            )
+        ]
+        if pair_row.empty:
+            continue
+        pair_row = pair_row.iloc[0]
+        if pair_row["model_a"] == model_name:
+            ci_low = pair_row["value_b"] + pair_row["ci_low"]
+            ci_high = pair_row["value_b"] + pair_row["ci_high"]
+        else:
+            ci_low = pair_row["value_a"] - pair_row["ci_high"]
+            ci_high = pair_row["value_a"] - pair_row["ci_low"]
+        plot_df.loc[row_index, ["ci_low", "ci_high"]] = [ci_low, ci_high]
+
+    fig, ax = plt.subplots(figsize=(8, max(4, 0.48 * len(plot_df))))
+    palette = {"ml": "#0072B2", "dl": "#D55E00"}
+    y_positions = np.arange(len(plot_df))
+    colors = [palette.get(family, "#666666") for family in plot_df["model_family"]]
+    ax.scatter(plot_df[metric_name], y_positions, s=70, c=colors, zorder=3)
+    for y_position, (_, row) in zip(y_positions, plot_df.iterrows()):
+        if np.isfinite(row["ci_low"]) and np.isfinite(row["ci_high"]):
+            ax.plot([row["ci_low"], row["ci_high"]], [y_position, y_position], color="#444444", linewidth=1.7, zorder=2)
+    ax.set_yticks(y_positions)
+    ax.set_yticklabels(plot_df["model_name"])
+    ax.set_xlabel(metric_name.replace("_", " ").title())
+    ax.set_ylabel("")
+    ax.set_title(f"{metric_name.replace('_', ' ').title()} Ranking")
+    ax.grid(axis="x", alpha=0.25)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_pairwise_difference_heatmap(pairwise_case_df: pd.DataFrame, *, metric_name: str, output_path: Path) -> None:
+    metric_df = pairwise_case_df[pairwise_case_df["metric"] == metric_name].copy()
+    if metric_df.empty:
+        return
+    model_names = sorted(set(metric_df["model_a"]).union(metric_df["model_b"]))
+    matrix = pd.DataFrame(np.nan, index=model_names, columns=model_names)
+    pvalue_matrix = pd.DataFrame(np.nan, index=model_names, columns=model_names)
+    for _, row in metric_df.iterrows():
+        model_a = row["model_a"]
+        model_b = row["model_b"]
+        difference = row["observed_difference_a_minus_b"]
+        matrix.loc[model_a, model_b] = difference
+        matrix.loc[model_b, model_a] = -difference
+        pvalue_matrix.loc[model_a, model_b] = row["paired_permutation_p_value"]
+        pvalue_matrix.loc[model_b, model_a] = row["paired_permutation_p_value"]
+    np.fill_diagonal(matrix.values, 0.0)
+
+    annotations = matrix.copy().astype(object)
+    for model_a in model_names:
+        for model_b in model_names:
+            value = matrix.loc[model_a, model_b]
+            p_value = pvalue_matrix.loc[model_a, model_b]
+            if model_a == model_b:
+                annotations.loc[model_a, model_b] = "0.000"
+            elif np.isfinite(p_value):
+                annotations.loc[model_a, model_b] = f"{value:.3f}\np={p_value:.3f}"
+            else:
+                annotations.loc[model_a, model_b] = f"{value:.3f}"
+
+    fig_size = max(6, 0.85 * len(model_names))
+    fig, ax = plt.subplots(figsize=(fig_size, fig_size))
+    max_abs = np.nanmax(np.abs(matrix.to_numpy(dtype=float)))
+    sns.heatmap(
+        matrix,
+        annot=annotations,
+        fmt="",
+        cmap="vlag",
+        center=0,
+        vmin=-max_abs,
+        vmax=max_abs,
+        square=True,
+        linewidths=0.5,
+        cbar_kws={"label": f"{metric_name} difference"},
+        ax=ax,
+    )
+    ax.set_title(f"Pairwise {metric_name.replace('_', ' ').title()} Difference (Row - Column)")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_probability_distributions(pooled_predictions_df: pd.DataFrame, *, output_path: Path) -> None:
+    if pooled_predictions_df.empty:
+        return
+    plot_df = pooled_predictions_df.copy()
+    plot_df["label_name"] = plot_df["true_label"].map({0: "Non-csPCa", 1: "csPCa"})
+    fig, ax = plt.subplots(figsize=(10, max(4.5, 0.45 * plot_df["model_name"].nunique())))
+    sns.violinplot(
+        data=plot_df,
+        x="probability",
+        y="model_name",
+        hue="label_name",
+        split=True,
+        inner="quart",
+        linewidth=0.8,
+        palette={"Non-csPCa": "#56B4E9", "csPCa": "#E69F00"},
+        ax=ax,
+    )
+    ax.axvline(0.5, color="#333333", linestyle="--", linewidth=1.2, label="0.5 threshold")
+    ax.set_xlabel("Predicted Probability")
+    ax.set_ylabel("Model")
+    ax.set_title("Predicted Probability Distributions by Class")
+    ax.legend(loc="lower right", fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_fold_metric_heatmap(fold_metrics_df: pd.DataFrame, *, metric_name: str, output_path: Path) -> None:
+    if fold_metrics_df.empty:
+        return
+    heatmap_df = fold_metrics_df.pivot_table(index="model_name", columns="fold_index", values=metric_name)
+    fig, ax = plt.subplots(figsize=(8, max(4, 0.42 * len(heatmap_df))))
+    sns.heatmap(
+        heatmap_df,
+        annot=True,
+        fmt=".3f",
+        cmap="viridis_r" if metric_name in {"log_loss", "brier_score"} else "viridis",
+        linewidths=0.4,
+        cbar_kws={"label": metric_name.replace("_", " ").title()},
+        ax=ax,
+    )
+    ax.set_xlabel("Fold")
+    ax.set_ylabel("Model")
+    ax.set_title(f"{metric_name.replace('_', ' ').title()} by Fold")
     fig.tight_layout()
     fig.savefig(output_path, dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -932,9 +1342,11 @@ def main() -> None:
     ml_fold_predictions = load_ml_fold_predictions(Path(args.ml_predictions_csv).resolve(), selected_ml_classifiers)
     pooled_prediction_frames = []
     fold_metric_rows = []
+    benchmark_fold_predictions: dict[str, dict[int, dict]] = {}
 
     for classifier_name in selected_ml_classifiers:
         fold_payload = ml_fold_predictions[classifier_name]
+        benchmark_fold_predictions[classifier_name] = fold_payload
         fold_metric_rows.extend(
             build_metric_rows(
                 model_name=classifier_name,
@@ -956,6 +1368,7 @@ def main() -> None:
         model_name = str(model_entry["architecture"])
         run_dir = Path(model_entry["run_dir"]).resolve()
         fold_payload = load_dl_fold_predictions(run_dir=run_dir, id_column="sample_id")
+        benchmark_fold_predictions[model_name] = fold_payload
         fold_metric_rows.extend(
             build_metric_rows(
                 model_name=model_name,
@@ -971,6 +1384,11 @@ def main() -> None:
                 fold_predictions=fold_payload,
             )
         )
+
+    validate_fold_prediction_alignment(
+        benchmark_fold_predictions,
+        output_path=metrics_dir / "fold_alignment_validation.csv",
+    )
 
     fold_metrics_df = pd.DataFrame(fold_metric_rows).sort_values(["model_name", "fold_index"])
     pooled_predictions_df = pd.concat(pooled_prediction_frames, ignore_index=True)
@@ -1003,13 +1421,39 @@ def main() -> None:
     pairwise_df = compare_models_foldwise(fold_metrics_df)
     pairwise_df.to_csv(metrics_dir / "foldwise_pairwise_comparisons.csv", index=False)
 
-    for metric_name in ["auroc", "ap", "picai_score", "accuracy", "balanced_accuracy", "f1", "mcc", "sensitivity", "specificity", "ppv", "npv", "log_loss"]:
+    pairwise_case_df = build_pairwise_case_comparisons(
+        pooled_predictions_df,
+        threshold=args.classification_threshold,
+        n_bootstrap=args.n_bootstrap,
+        bootstrap_seed=args.bootstrap_seed,
+        n_permutation_tests=args.n_permutation_tests,
+    )
+    pairwise_case_df.to_csv(metrics_dir / "case_level_pairwise_comparisons.csv", index=False)
+
+    reference_model = pooled_metrics_df.iloc[0]["model_name"]
+    for metric_name in ALL_METRICS:
         plot_metric_by_fold(fold_metrics_df, metric_name, curves_dir / f"{metric_name}_by_fold.png")
         plot_pooled_metric_bars(pooled_metrics_df, metric_name, curves_dir / f"{metric_name}_pooled_bar.png")
+        plot_fold_metric_heatmap(fold_metrics_df, metric_name=metric_name, output_path=curves_dir / f"{metric_name}_fold_heatmap.png")
+        plot_metric_ranking_with_bootstrap(
+            pooled_metrics_df,
+            pairwise_case_df,
+            reference_model=reference_model,
+            metric_name=metric_name,
+            output_path=curves_dir / f"{metric_name}_ranking_bootstrap_ci.png",
+        )
+
+    for metric_name in PRIMARY_METRICS + ["log_loss", "brier_score"]:
+        plot_pairwise_difference_heatmap(
+            pairwise_case_df,
+            metric_name=metric_name,
+            output_path=curves_dir / f"{metric_name}_pairwise_difference_heatmap.png",
+        )
 
     plot_pooled_curves(pooled_predictions_df, curve_type="roc", output_path=curves_dir / "pooled_roc_comparison.png")
     plot_pooled_curves(pooled_predictions_df, curve_type="pr", output_path=curves_dir / "pooled_pr_comparison.png")
     plot_calibration(pooled_predictions_df, curves_dir / "calibration_comparison.png")
+    plot_probability_distributions(pooled_predictions_df, output_path=curves_dir / "probability_distribution_by_class.png")
     plot_confusion_heatmaps(pooled_predictions_df, args.classification_threshold, confusion_dir)
 
     for model_name in pooled_predictions_df["model_name"].drop_duplicates():
@@ -1032,6 +1476,27 @@ def main() -> None:
             curve_type="pr",
             output_path=curves_dir / f"{make_safe_slug(model_name)}_pr_by_fold.png",
         )
+
+    if args.skip_interpretability:
+        summary_payload = {
+            "n_models": int(fold_metrics_df["model_name"].nunique()),
+            "n_ml_models": int((fold_metrics_df["model_family"] == "ml").sum() / len(split_definitions)),
+            "n_dl_models": int((fold_metrics_df["model_family"] == "dl").sum() / len(split_definitions)),
+            "n_folds": len(split_definitions),
+            "classification_threshold": args.classification_threshold,
+            "bootstrap_iterations": args.n_bootstrap,
+            "permutation_tests": args.n_permutation_tests,
+            "best_pooled_model": str(reference_model),
+            "metrics_dir": str(metrics_dir),
+            "curves_dir": str(curves_dir),
+            "interpretability_skipped": True,
+        }
+        (output_dir / "benchmark_summary.json").write_text(
+            json.dumps(summary_payload, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        log_progress("Final benchmark comparison completed; interpretability skipped.")
+        return
 
     ml_module = load_module(
         "radiomics_ml_train_module",
@@ -1136,9 +1601,10 @@ def main() -> None:
     # DL interpretability
     if tf is not None:
         custom_objects = {
-            "PositionalEmbedding": dl_module.PositionalEmbedding,
-            "AttentionPooling1D": dl_module.AttentionPooling1D,
-            "DigitCapsuleLayer": dl_module.DigitCapsuleLayer,
+            "PositionalEmbedding": PositionalEmbedding,
+            "AttentionPooling1D": AttentionPooling1D,
+            "DigitCapsuleLayer": DigitCapsuleLayer,
+            "FeatureSlice": FeatureSlice,
         }
         for model_entry in dl_models:
             model_name = str(model_entry["architecture"])
@@ -1303,9 +1769,13 @@ def main() -> None:
         "n_dl_models": int((fold_metrics_df["model_family"] == "dl").sum() / len(split_definitions)),
         "n_folds": len(split_definitions),
         "classification_threshold": args.classification_threshold,
+        "bootstrap_iterations": args.n_bootstrap,
+        "permutation_tests": args.n_permutation_tests,
+        "best_pooled_model": str(reference_model),
         "metrics_dir": str(metrics_dir),
         "curves_dir": str(curves_dir),
         "interpretability_dir": str(interpret_dir),
+        "interpretability_skipped": False,
     }
     (output_dir / "benchmark_summary.json").write_text(
         json.dumps(summary_payload, indent=2, sort_keys=True),

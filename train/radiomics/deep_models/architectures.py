@@ -6,7 +6,7 @@ import numpy as np
 import tensorflow as tf
 from tensorflow.keras import layers
 from tensorflow.keras.models import Model
-from tensorflow.keras.optimizers import Adam, AdamW
+from tensorflow.keras.optimizers import Adam
 
 from train.radiomics.deep_models.config import DeepTabularConfig
 from train.radiomics.deep_models.layers import (
@@ -34,14 +34,17 @@ def _cosine_restart_optimizer(config: DeepTabularConfig) -> Adam:
     return Adam(learning_rate=lr_schedule)
 
 
-def _cosine_restart_adamw(config: DeepTabularConfig) -> AdamW:
+def _cosine_restart_adamw(config: DeepTabularConfig):
     lr_schedule = tf.keras.optimizers.schedules.CosineDecayRestarts(
         initial_learning_rate=config.learning_rate,
         first_decay_steps=50,
         t_mul=2.0,
         m_mul=0.9,
     )
-    return AdamW(learning_rate=lr_schedule, weight_decay=config.weight_decay)
+    adamw_cls = getattr(tf.keras.optimizers, "AdamW", None)
+    if adamw_cls is not None:
+        return adamw_cls(learning_rate=lr_schedule, weight_decay=config.weight_decay)
+    return Adam(learning_rate=lr_schedule)
 
 
 def _compile_transformer(model: Model, config: DeepTabularConfig) -> Model:

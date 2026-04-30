@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import tensorflow as tf
-from tensorflow.keras import initializers, layers, ops
+from tensorflow.keras import initializers, layers
 
 
 EPSILON = 1e-7
@@ -12,9 +12,9 @@ EPSILON = 1e-7
 def squash(inputs, axis: int = -1):
     """Squashing non-linearity used by capsule networks."""
 
-    squared_norm = ops.sum(ops.square(inputs), axis=axis, keepdims=True)
+    squared_norm = tf.reduce_sum(tf.square(inputs), axis=axis, keepdims=True)
     scale = squared_norm / (1.0 + squared_norm)
-    return scale * inputs / ops.sqrt(squared_norm + EPSILON)
+    return scale * inputs / tf.sqrt(squared_norm + EPSILON)
 
 
 @tf.keras.utils.register_keras_serializable(package="RadiomicsDeepModels")
@@ -121,24 +121,27 @@ class DigitCapsuleLayer(layers.Layer):
         super().build(input_shape)
 
     def call(self, inputs):
-        batch_size = ops.shape(inputs)[0]
-        u = ops.expand_dims(inputs, axis=2)
-        u = ops.expand_dims(u, axis=-1)
-        W = ops.tile(self.W, [batch_size, 1, 1, 1, 1])
-        u_hat = ops.matmul(W, u)
-        u_hat = ops.squeeze(u_hat, axis=-1)
-        routing_logits = ops.zeros((batch_size, self.num_input_caps, self.num_capsules, 1))
+        batch_size = tf.shape(inputs)[0]
+        u = tf.expand_dims(inputs, axis=2)
+        u = tf.expand_dims(u, axis=-1)
+        W = tf.tile(self.W, [batch_size, 1, 1, 1, 1])
+        u_hat = tf.matmul(W, u)
+        u_hat = tf.squeeze(u_hat, axis=-1)
+        routing_logits = tf.zeros(
+            (batch_size, self.num_input_caps, self.num_capsules, 1),
+            dtype=inputs.dtype,
+        )
 
         capsule_outputs = None
         for routing_index in range(self.routing_iter):
-            coupling = ops.softmax(routing_logits, axis=2)
-            capsule_inputs = ops.sum(coupling * u_hat, axis=1, keepdims=True)
+            coupling = tf.nn.softmax(routing_logits, axis=2)
+            capsule_inputs = tf.reduce_sum(coupling * u_hat, axis=1, keepdims=True)
             capsule_outputs = squash(capsule_inputs, axis=-1)
             if routing_index < self.routing_iter - 1:
-                agreement = ops.sum(u_hat * capsule_outputs, axis=-1, keepdims=True)
+                agreement = tf.reduce_sum(u_hat * capsule_outputs, axis=-1, keepdims=True)
                 routing_logits = routing_logits + agreement
 
-        return ops.squeeze(capsule_outputs, axis=1)
+        return tf.squeeze(capsule_outputs, axis=1)
 
     def compute_output_shape(self, input_shape):
         return (input_shape[0], self.num_capsules, self.dim_capsules)
@@ -160,7 +163,7 @@ class Length(layers.Layer):
     """Capsule length layer."""
 
     def call(self, inputs):
-        return ops.sqrt(ops.sum(ops.square(inputs), axis=-1) + EPSILON)
+        return tf.sqrt(tf.reduce_sum(tf.square(inputs), axis=-1) + EPSILON)
 
     def compute_output_shape(self, input_shape):
         return input_shape[:-1]

@@ -8,10 +8,10 @@ unified CLI. Run commands from the repository root after installing the package.
 This is still a legacy utility because it only creates the fold manifest:
 
 ```bash
-python train/radiomics/2_modeling/export_picai_nnunet_folds.py \
-  --csv artifacts/radiomics/concatenated_data/features_all_gland.csv \
-  --folds_root nnunet_res/nnUNet_trained_models/Dataset101_picai_baseline/nnUNetTrainer__nnUNetResEncUNetLPlans__3d_fullres/crossval_results_folds_0_1_2_3_4 \
-  --out results/radiomics/picai_nnunet_5folds.json
+python train/radiomics/2_modeling/export_picai_fold_assignments.py \
+  --source picai_nnunet \
+  --output results/radiomics/picai_nnunet_5folds.json \
+  --identifier_type sample_id
 ```
 
 ## 2. Radiomics-Only Feature Prep
@@ -59,6 +59,25 @@ config first:
 prostate-radiomics train-classical \
   --config configs/experiments/classical_feature_prep_5fold.yaml
 ```
+
+If the deep job is already running or already finished, and you want the pooled
+OOF comparison for both `fixed_0.5` and fold-specific `validation_youden`
+thresholds without retraining, postprocess the suite manifest:
+
+```bash
+prostate-radiomics postprocess-deep \
+  --config configs/experiments/deep_threshold_postprocess.yaml
+```
+
+Or point directly to one architecture run:
+
+```bash
+prostate-radiomics postprocess-deep \
+  --run-dir results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_transformer
+```
+
+This writes a compact threshold audit from the already-saved `test_predictions.csv`
+and `threshold_diagnostics.json` files in each fold.
 
 ## 6. Reduced Clinical Report
 
@@ -135,3 +154,7 @@ For a fair comparison, keep the same PI-CAI fold JSON and compare:
 - radiomics+clinical DL
 
 using the reduced report and the same bootstrap settings.
+
+After a clinical or dual-branch deep suite finishes, the same postprocess
+command can be applied to its manifest to compare `fixed_0.5` versus
+`validation_youden` without another training pass.

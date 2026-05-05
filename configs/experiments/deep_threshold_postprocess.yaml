@@ -1,0 +1,3 @@
+postprocess_deep:
+  manifest: results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_suite_manifest.json
+  outdir: results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_threshold_postprocess

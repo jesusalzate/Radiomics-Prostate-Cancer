@@ -56,6 +56,26 @@ calibration is enabled:
 - `threshold_diagnostics.json` with pre/post ECE and Brier summaries
 - `cv_oof_predictions.csv` with both `probability_csPCa_raw` and calibrated `probability_csPCa`
 
+Deep CV outputs now also preserve both threshold views:
+
+- `prediction_fixed_0_5`
+- `prediction_validation_youden`
+- `cv_fold_metrics.csv` with both `fixed_0_5_*` and `validation_youden_*`
+- `cv_summary.json` with `oof_metrics_fixed_0_5` and `oof_metrics_validation_youden`
+
+For runs started before those extra pooled fields were added, or for a clean
+threshold audit after the job completes, `prostate-radiomics postprocess-deep`
+writes:
+
+- `threshold_postprocess/cv_oof_predictions_thresholds.csv`
+- `threshold_postprocess/threshold_comparison_fold_metrics.csv`
+- `threshold_postprocess/threshold_comparison_summary.json`
+- `threshold_postprocess/threshold_comparison_report.md`
+
+When invoked on a suite manifest, it also writes:
+
+- `suite_threshold_summary.csv`
+
 ## Git Policy
 
 The following are ignored:

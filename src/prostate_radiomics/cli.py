@@ -110,6 +110,35 @@ def command_interpret(args: argparse.Namespace) -> int:
     return _run_legacy_script(script, args.config, "interpretability", _strip_remainder(args.legacy_args), args.dry_run)
 
 
+def command_postprocess_deep(args: argparse.Namespace) -> int:
+    from prostate_radiomics.data.io import resolve_project_path
+    from prostate_radiomics.reporting.deep_postprocess import (
+        postprocess_deep_threshold_run,
+        postprocess_deep_threshold_suite,
+    )
+
+    config = config_arguments(load_yaml_config(args.config), section="postprocess_deep")
+    manifest = args.manifest or config.get("manifest")
+    run_dir = args.run_dir or config.get("run_dir")
+    outdir = args.outdir or config.get("outdir")
+    if bool(manifest) == bool(run_dir):
+        raise ValueError("postprocess-deep requires exactly one of --manifest or --run-dir.")
+    if manifest:
+        outputs = postprocess_deep_threshold_suite(
+            resolve_project_path(manifest),
+            output_dir=resolve_project_path(outdir) if outdir else None,
+        )
+        print(f"Saved suite threshold postprocess summary to {outputs['suite_summary']}")
+        return 0
+
+    outputs = postprocess_deep_threshold_run(
+        resolve_project_path(run_dir),
+        output_dir=resolve_project_path(outdir) if outdir else None,
+    )
+    print(f"Saved deep threshold postprocess report to {outputs['report']}")
+    return 0
+
+
 def _read_named_prediction(argument: str, id_column: str):
     import pandas as pd
 
@@ -252,6 +281,16 @@ def build_parser() -> argparse.ArgumentParser:
     interpret.add_argument("--dry-run", action="store_true")
     interpret.add_argument("legacy_args", nargs=argparse.REMAINDER)
     interpret.set_defaults(func=command_interpret)
+
+    postprocess_deep = subparsers.add_parser(
+        "postprocess-deep",
+        help="Rebuild pooled deep OOF metrics for fixed 0.5 and validation-Youden thresholds without retraining.",
+    )
+    postprocess_deep.add_argument("--config", default=None)
+    postprocess_deep.add_argument("--manifest", default=None)
+    postprocess_deep.add_argument("--run-dir", default=None)
+    postprocess_deep.add_argument("--outdir", default=None)
+    postprocess_deep.set_defaults(func=command_postprocess_deep)
 
     compare = subparsers.add_parser("compare", help="Build a reduced clinical comparison from OOF predictions.")
     compare.add_argument("--config", default=None)

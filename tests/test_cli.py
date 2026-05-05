@@ -101,3 +101,53 @@ def test_cli_add_clinical_smoke(tmp_path):
     ) == 0
     merged = pd.read_csv(output)
     assert "clinical_psa" in merged.columns
+
+
+def test_cli_postprocess_deep_smoke(tmp_path):
+    run_dir = tmp_path / "deep_run"
+    fold_1 = run_dir / "fold_01"
+    fold_2 = run_dir / "fold_02"
+    fold_1.mkdir(parents=True)
+    fold_2.mkdir(parents=True)
+
+    pd.DataFrame(
+        {
+            "patient_id": ["p1", "p2"],
+            "sample_id": ["p1_s1", "p2_s1"],
+            "label": [0, 1],
+            "probability_csPCa": [0.2, 0.7],
+            "model_name": ["transformer", "transformer"],
+        }
+    ).to_csv(fold_1 / "test_predictions.csv", index=False)
+    (fold_1 / "threshold_diagnostics.json").write_text(
+        '{"validation_youden_threshold": 0.35}',
+        encoding="utf-8",
+    )
+
+    pd.DataFrame(
+        {
+            "patient_id": ["p3", "p4"],
+            "sample_id": ["p3_s1", "p4_s1"],
+            "label": [0, 1],
+            "probability_csPCa": [0.1, 0.8],
+            "model_name": ["transformer", "transformer"],
+        }
+    ).to_csv(fold_2 / "test_predictions.csv", index=False)
+    (fold_2 / "threshold_diagnostics.json").write_text(
+        '{"validation_youden_threshold": 0.25}',
+        encoding="utf-8",
+    )
+
+    outdir = tmp_path / "postprocess"
+    assert main(
+        [
+            "postprocess-deep",
+            "--run-dir",
+            str(run_dir),
+            "--outdir",
+            str(outdir),
+        ]
+    ) == 0
+    assert (outdir / "cv_oof_predictions_thresholds.csv").exists()
+    assert (outdir / "threshold_comparison_fold_metrics.csv").exists()
+    assert (outdir / "threshold_comparison_summary.json").exists()

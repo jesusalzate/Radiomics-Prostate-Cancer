@@ -721,13 +721,17 @@ def train_and_evaluate_single_split(
     val_prob = apply_probability_calibrator(calibrator, val_prob_raw, args.probability_calibration)
     test_prob = apply_probability_calibrator(calibrator, test_prob_raw, args.probability_calibration)
     val_youden_threshold = choose_threshold(y_val, val_prob)
+    test_metrics_fixed_0_5 = compute_binary_metrics(y_test, test_prob, 0.5)
+    test_metrics_val_youden = compute_binary_metrics(y_test, test_prob, val_youden_threshold)
     if args.threshold_strategy == "fixed_0.5":
         threshold = 0.5
+        test_metrics = test_metrics_fixed_0_5
     else:
         threshold = val_youden_threshold
-    test_metrics = compute_binary_metrics(y_test, test_prob, threshold)
-    test_metrics_val_youden = compute_binary_metrics(y_test, test_prob, val_youden_threshold)
+        test_metrics = test_metrics_val_youden
     test_pred = (test_prob >= threshold).astype(int)
+    test_pred_fixed_0_5 = (test_prob >= 0.5).astype(int)
+    test_pred_val_youden = (test_prob >= val_youden_threshold).astype(int)
     calibration_summary = {
         "method": args.probability_calibration,
         "ece_pre": calibration_error(y_val, val_prob_raw),
@@ -743,10 +747,12 @@ def train_and_evaluate_single_split(
         **summarize_probabilities(test_prob_raw, "test_raw"),
         **summarize_probabilities(test_prob, "test_calibrated"),
         "selected_threshold": float(threshold),
+        "fixed_threshold": 0.5,
         "validation_youden_threshold": float(val_youden_threshold),
         "threshold_strategy": args.threshold_strategy,
         "probability_calibration": args.probability_calibration,
         "calibration_summary": calibration_summary,
+        "test_metrics_at_fixed_0_5": test_metrics_fixed_0_5,
         "test_metrics_at_validation_youden": test_metrics_val_youden,
     }
 
@@ -758,8 +764,12 @@ def train_and_evaluate_single_split(
     predictions["fold_label"] = fold_label
     predictions["selected_feature_count"] = input_feature_count
     predictions["threshold"] = threshold
+    predictions["threshold_fixed_0_5"] = 0.5
+    predictions["threshold_validation_youden"] = val_youden_threshold
     predictions["probability_csPCa_raw"] = test_prob_raw
     predictions["probability_csPCa"] = test_prob
+    predictions["prediction_fixed_0_5"] = test_pred_fixed_0_5
+    predictions["prediction_validation_youden"] = test_pred_val_youden
     predictions["prediction"] = test_pred
     predictions.to_csv(output_dir / "test_predictions.csv", index=False)
     best_epoch = int(np.argmax(history.history.get("val_auc", [0.0])) + 1)
@@ -781,6 +791,13 @@ def train_and_evaluate_single_split(
         f"test_f1_at_validation_youden={test_metrics_val_youden['f1']:.4f}"
     )
     log_progress(
+        f"{fold_label} | threshold comparison | "
+        f"f1_fixed_0.5={test_metrics_fixed_0_5['f1']:.4f} | "
+        f"balacc_fixed_0.5={test_metrics_fixed_0_5['balanced_accuracy']:.4f} | "
+        f"f1_val_youden={test_metrics_val_youden['f1']:.4f} | "
+        f"balacc_val_youden={test_metrics_val_youden['balanced_accuracy']:.4f}"
+    )
+    log_progress(
         f"{fold_label} | calibration | method={args.probability_calibration} | "
         f"val_ece_pre={calibration_summary['ece_pre']:.4f} | "
         f"val_ece_post={calibration_summary['ece_post']:.4f} | "
@@ -788,7 +805,16 @@ def train_and_evaluate_single_split(
         f"val_brier_post={calibration_summary['brier_post']:.4f}"
     )
 
-    pd.DataFrame([test_metrics]).to_csv(output_dir / "test_metrics.csv", index=False)
+    fold_metric_payload = {
+        **test_metrics,
+        "selected_threshold": float(threshold),
+        "validation_youden_threshold": float(val_youden_threshold),
+    }
+    for metric_name, metric_value in test_metrics_fixed_0_5.items():
+        fold_metric_payload[f"fixed_0_5_{metric_name}"] = metric_value
+    for metric_name, metric_value in test_metrics_val_youden.items():
+        fold_metric_payload[f"validation_youden_{metric_name}"] = metric_value
+    pd.DataFrame([fold_metric_payload]).to_csv(output_dir / "test_metrics.csv", index=False)
     (output_dir / "threshold_diagnostics.json").write_text(
         json.dumps(probability_summary, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -833,7 +859,7 @@ def train_and_evaluate_single_split(
         encoding="utf-8",
     )
 
-    return test_metrics, predictions, run_config
+    return fold_metric_payload, predictions, run_config
 
 
 def main() -> None:
@@ -972,9 +998,19 @@ def main() -> None:
         oof_predictions_df = pd.concat(prediction_frames, ignore_index=True)
         oof_predictions_df.to_csv(output_dir / "cv_oof_predictions.csv", index=False)
 
-        oof_metrics = compute_binary_metrics_from_predictions(
+        oof_metrics_selected = compute_binary_metrics_from_predictions(
             y_true=oof_predictions_df[args.label_column].to_numpy(dtype=int),
             y_pred=oof_predictions_df["prediction"].to_numpy(dtype=int),
+            y_prob=oof_predictions_df["probability_csPCa"].to_numpy(dtype=float),
+        )
+        oof_metrics_fixed_0_5 = compute_binary_metrics_from_predictions(
+            y_true=oof_predictions_df[args.label_column].to_numpy(dtype=int),
+            y_pred=oof_predictions_df["prediction_fixed_0_5"].to_numpy(dtype=int),
+            y_prob=oof_predictions_df["probability_csPCa"].to_numpy(dtype=float),
+        )
+        oof_metrics_validation_youden = compute_binary_metrics_from_predictions(
+            y_true=oof_predictions_df[args.label_column].to_numpy(dtype=int),
+            y_pred=oof_predictions_df["prediction_validation_youden"].to_numpy(dtype=int),
             y_prob=oof_predictions_df["probability_csPCa"].to_numpy(dtype=float),
         )
         summary_payload = {
@@ -990,7 +1026,10 @@ def main() -> None:
                 for column in cv_metrics_df.columns
                 if column not in {"fold_index", "fold_label"} and len(cv_metrics_df) > 1
             },
-            "oof_metrics": oof_metrics,
+            "threshold_strategy": args.threshold_strategy,
+            "oof_metrics": oof_metrics_selected,
+            "oof_metrics_fixed_0_5": oof_metrics_fixed_0_5,
+            "oof_metrics_validation_youden": oof_metrics_validation_youden,
             "folds": fold_run_configs,
         }
         (output_dir / "cv_summary.json").write_text(
@@ -998,9 +1037,15 @@ def main() -> None:
             encoding="utf-8",
         )
         log_progress(
-            f"Completed predefined-fold CV | pooled_auc={oof_metrics['auc']:.4f} | "
-            f"pooled_balanced_accuracy={oof_metrics['balanced_accuracy']:.4f} | "
-            f"pooled_f1={oof_metrics['f1']:.4f} | pooled_mcc={oof_metrics['mcc']:.4f}"
+            f"Completed predefined-fold CV | pooled_auc={oof_metrics_selected['auc']:.4f} | "
+            f"pooled_balanced_accuracy={oof_metrics_selected['balanced_accuracy']:.4f} | "
+            f"pooled_f1={oof_metrics_selected['f1']:.4f} | pooled_mcc={oof_metrics_selected['mcc']:.4f}"
+        )
+        log_progress(
+            f"Completed predefined-fold CV | fixed_0.5 pooled_f1={oof_metrics_fixed_0_5['f1']:.4f} | "
+            f"fixed_0.5 pooled_balanced_accuracy={oof_metrics_fixed_0_5['balanced_accuracy']:.4f} | "
+            f"val_youden pooled_f1={oof_metrics_validation_youden['f1']:.4f} | "
+            f"val_youden pooled_balanced_accuracy={oof_metrics_validation_youden['balanced_accuracy']:.4f}"
         )
         print(json.dumps(summary_payload["oof_metrics"], indent=2, sort_keys=True))
         return

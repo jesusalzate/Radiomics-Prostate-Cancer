@@ -67,6 +67,43 @@ def test_cli_compare_smoke(tmp_path):
     assert set(metrics_df["bootstrap_unit"]) == {"patient_id"}
 
 
+def test_cli_compare_accepts_deep_oof_schema(tmp_path):
+    pred_a = tmp_path / "ml.csv"
+    pred_b = tmp_path / "deep.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["1", "2", "3", "4"],
+            "patient_id": ["p1", "p2", "p3", "p4"],
+            "true_label": [0, 0, 1, 1],
+            "probability": [0.1, 0.3, 0.8, 0.9],
+        }
+    ).to_csv(pred_a, index=False)
+    pd.DataFrame(
+        {
+            "sample_id": ["1", "2", "3", "4"],
+            "patient_id": ["p1", "p2", "p3", "p4"],
+            "label": [0, 0, 1, 1],
+            "probability_csPCa": [0.2, 0.4, 0.7, 0.85],
+            "model_name": ["transformer", "transformer", "transformer", "transformer"],
+        }
+    ).to_csv(pred_b, index=False)
+    outdir = tmp_path / "report_deep_schema"
+    assert main(
+        [
+            "compare",
+            "--prediction",
+            f"ML={pred_a}",
+            "--prediction",
+            f"transformer={pred_b}",
+            "--outdir",
+            str(outdir),
+            "--n-bootstrap",
+            "10",
+        ]
+    ) == 0
+    assert (outdir / "metrics_summary.csv").exists()
+
+
 def test_cli_add_clinical_smoke(tmp_path):
     radiomics_csv = tmp_path / "radiomics.csv"
     clinical_csv = tmp_path / "clinical.csv"

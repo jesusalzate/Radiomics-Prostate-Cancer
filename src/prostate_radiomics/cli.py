@@ -155,7 +155,7 @@ def _read_named_prediction(argument: str, id_column: str):
         classifier_df = df[df["Classifier"].astype(str) == model_name].copy()
         if not classifier_df.empty:
             df = classifier_df
-    if "model_name" in df.columns:
+    if "model_name" in df.columns and {"true_label", "probability"}.issubset(df.columns):
         keep_columns = [id_column, "true_label", "probability", "model_name"]
         for optional_column in ["patient_id", "study_id", "sample_id"]:
             if optional_column in df.columns and optional_column not in keep_columns:

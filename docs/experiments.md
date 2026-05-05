@@ -3,6 +3,13 @@
 This page maps the historical `run.sh` and `run_dl.sh` experiments to the
 unified CLI. Run commands from the repository root after installing the package.
 
+For SLURM-ready end-to-end runs, use:
+
+- [scripts/hpc/01_ml_from_scratch.sh](/Users/alejo/Documents/Study/PhD/Prostate-Radiomics-ML/scripts/hpc/01_ml_from_scratch.sh)
+- [scripts/hpc/02_dl_from_scratch.sh](/Users/alejo/Documents/Study/PhD/Prostate-Radiomics-ML/scripts/hpc/02_dl_from_scratch.sh)
+- [scripts/hpc/03_compare_interpret.sh](/Users/alejo/Documents/Study/PhD/Prostate-Radiomics-ML/scripts/hpc/03_compare_interpret.sh)
+- [scripts/hpc/04_clinical_when_ready.sh](/Users/alejo/Documents/Study/PhD/Prostate-Radiomics-ML/scripts/hpc/04_clinical_when_ready.sh)
+
 ## 1. Export PI-CAI 5-Fold Split
 
 This is still a legacy utility because it only creates the fold manifest:

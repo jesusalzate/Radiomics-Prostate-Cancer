@@ -40,6 +40,18 @@ prostate-radiomics train-classical \
   --config configs/experiments/classical_final_top3_tuned_5fold.yaml
 ```
 
+For a calibrated final ML benchmark with train-only threshold selection:
+
+```bash
+prostate-radiomics train-classical \
+  --config configs/experiments/classical_final_top3_tuned_5fold_calibrated.yaml
+```
+
+This run writes calibrated OOF probabilities plus both:
+
+- `prediction_fixed_0_5`
+- `prediction_validation_youden`
+
 ## 5. Radiomics-Only Deep Suite
 
 ```bash
@@ -89,6 +101,24 @@ prostate-radiomics compare \
 Edit `configs/reports/clinical_comparison.yaml` with the exact OOF prediction
 paths to compare. The default report generates only the canonical scientific
 figures.
+
+If you want a thresholded comparison using precomputed fold-wise predictions
+such as `prediction_validation_youden`, use:
+
+```bash
+prostate-radiomics compare \
+  --config configs/reports/clinical_comparison_thresholded.yaml \
+  --prediction "Random Forest=results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv" \
+  --prediction "LightGBM=results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv" \
+  --prediction "Gradient Boosting=results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv" \
+  --prediction "transformer=results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_transformer/threshold_postprocess/cv_oof_predictions_thresholds.csv" \
+  --prediction "capsnet=results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_capsnet/threshold_postprocess/cv_oof_predictions_thresholds.csv" \
+  --prediction "transformer_capsnet=results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_transformer_capsnet/threshold_postprocess/cv_oof_predictions_thresholds.csv"
+```
+
+That report still uses calibrated probabilities for AUROC/AUPRC/Brier, but uses
+the saved binary predictions from `prediction_validation_youden` for
+sensitivity, specificity, balanced accuracy, F1, MCC, and confusion matrices.
 
 ## 7. Full Interpretability
 

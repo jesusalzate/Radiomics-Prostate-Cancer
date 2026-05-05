@@ -160,7 +160,16 @@ def _read_named_prediction(argument: str, id_column: str):
         for optional_column in ["patient_id", "study_id", "sample_id"]:
             if optional_column in df.columns and optional_column not in keep_columns:
                 keep_columns.append(optional_column)
+        for optional_column in df.columns:
+            if (
+                optional_column.startswith("prediction")
+                or optional_column.startswith("threshold")
+                or optional_column in {"predicted_label", "classification_threshold", "probability_raw"}
+            ) and optional_column not in keep_columns:
+                keep_columns.append(optional_column)
         normalized = df[keep_columns].copy()
+        if "predicted_label" in normalized.columns and "prediction" not in normalized.columns:
+            normalized = normalized.rename(columns={"predicted_label": "prediction"})
     else:
         normalized = normalize_prediction_frame(df, model_name=model_name, id_column=id_column)
     return model_name, normalized
@@ -183,6 +192,7 @@ def command_compare(args: argparse.Namespace) -> int:
     id_column = args.id_column or config.get("id_column", "sample_id")
     group_column = args.group_column or config.get("group_column")
     threshold = args.threshold if args.threshold is not None else float(config.get("threshold", 0.5))
+    prediction_column = args.prediction_column or config.get("prediction_column")
     n_bootstrap = args.n_bootstrap if args.n_bootstrap is not None else int(config.get("n_bootstrap", 1000))
     output_dir = resolve_project_path(args.outdir or config.get("outdir", "results/radiomics/clinical_comparison"))
 
@@ -196,6 +206,7 @@ def command_compare(args: argparse.Namespace) -> int:
         output_dir,
         group_column=group_column,
         threshold=threshold,
+        prediction_column=prediction_column,
         n_bootstrap=n_bootstrap,
         report_level=args.report_level or config.get("report_level", "summary"),
     )
@@ -214,6 +225,7 @@ def command_report(args: argparse.Namespace) -> int:
     output_dir = resolve_project_path(args.outdir or config.get("outdir", predictions_path.parent))
     group_column = args.group_column or config.get("group_column")
     threshold = args.threshold if args.threshold is not None else float(config.get("threshold", 0.5))
+    prediction_column = args.prediction_column or config.get("prediction_column")
     n_bootstrap = args.n_bootstrap if args.n_bootstrap is not None else int(config.get("n_bootstrap", 1000))
     predictions_df = pd.read_csv(predictions_path)
     if group_column is None:
@@ -223,6 +235,7 @@ def command_report(args: argparse.Namespace) -> int:
         output_dir,
         group_column=group_column,
         threshold=threshold,
+        prediction_column=prediction_column,
         n_bootstrap=n_bootstrap,
         report_level=args.report_level or config.get("report_level", "summary"),
     )
@@ -299,6 +312,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--id-column", default=None)
     compare.add_argument("--group-column", default=None)
     compare.add_argument("--threshold", type=float, default=None)
+    compare.add_argument("--prediction-column", default=None)
     compare.add_argument("--n-bootstrap", type=int, default=None)
     compare.add_argument("--report-level", choices=["summary", "full"], default=None)
     compare.set_defaults(func=command_compare)
@@ -309,6 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--outdir", default=None)
     report.add_argument("--group-column", default=None)
     report.add_argument("--threshold", type=float, default=None)
+    report.add_argument("--prediction-column", default=None)
     report.add_argument("--n-bootstrap", type=int, default=None)
     report.add_argument("--report-level", choices=["summary", "full"], default=None)
     report.set_defaults(func=command_report)

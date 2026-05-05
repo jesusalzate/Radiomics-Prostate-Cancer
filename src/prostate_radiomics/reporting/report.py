@@ -26,6 +26,7 @@ def summarize_predictions(
     *,
     group_column: str | None = None,
     threshold: float = 0.5,
+    prediction_column: str | None = None,
     n_bootstrap: int = 1000,
     seed: int = 42,
 ) -> pd.DataFrame:
@@ -35,11 +36,17 @@ def summarize_predictions(
     for model_name, model_df in predictions_df.groupby("model_name"):
         y_true = model_df["true_label"].to_numpy(dtype=int)
         y_prob = model_df["probability"].to_numpy(dtype=float)
+        y_pred = (
+            model_df[prediction_column].to_numpy(dtype=int)
+            if prediction_column and prediction_column in model_df.columns
+            else None
+        )
         effective_group_column = group_column if group_column in model_df.columns else None
-        metrics = compute_clinical_metrics(y_true, y_prob, threshold=threshold)
+        metrics = compute_clinical_metrics(y_true, y_prob, threshold=threshold, y_pred=y_pred)
         ci = bootstrap_metric_confidence_intervals(
             y_true,
             y_prob,
+            y_pred=y_pred,
             group_ids=model_df[effective_group_column].to_numpy(dtype=str) if effective_group_column else None,
             threshold=threshold,
             n_bootstrap=n_bootstrap,
@@ -77,6 +84,7 @@ def build_clinical_report(
     *,
     group_column: str | None = None,
     threshold: float = 0.5,
+    prediction_column: str | None = None,
     n_bootstrap: int = 1000,
     seed: int = 42,
     report_level: str = "summary",
@@ -92,6 +100,7 @@ def build_clinical_report(
         predictions_df,
         group_column=group_column,
         threshold=threshold,
+        prediction_column=prediction_column,
         n_bootstrap=n_bootstrap,
         seed=seed,
     )
@@ -117,6 +126,7 @@ def build_clinical_report(
             metrics_df,
             figures_dir / "confusion_matrices_top_models.png",
             threshold=threshold,
+            prediction_column=prediction_column,
             top_n=3 if report_level == "summary" else 6,
         ),
     ]
@@ -127,6 +137,7 @@ def build_clinical_report(
         "# Clinical Radiomics Model Comparison",
         "",
         f"Threshold: `{threshold}`",
+        f"Prediction column: `{prediction_column or 'threshold_from_probability'}`",
         f"Bootstrap iterations: `{n_bootstrap}`",
         f"Bootstrap unit: `{group_column or 'sample_id'}`",
         f"Report level: `{report_level}`",

@@ -104,6 +104,48 @@ def test_cli_compare_accepts_deep_oof_schema(tmp_path):
     assert (outdir / "metrics_summary.csv").exists()
 
 
+def test_cli_compare_uses_precomputed_prediction_column(tmp_path):
+    pred_a = tmp_path / "ml.csv"
+    pred_b = tmp_path / "dl.csv"
+    pd.DataFrame(
+        {
+            "sample_id": ["1", "2", "3", "4"],
+            "patient_id": ["p1", "p2", "p3", "p4"],
+            "true_label": [0, 0, 1, 1],
+            "probability": [0.2, 0.4, 0.45, 0.49],
+            "prediction_validation_youden": [0, 0, 1, 1],
+        }
+    ).to_csv(pred_a, index=False)
+    pd.DataFrame(
+        {
+            "sample_id": ["1", "2", "3", "4"],
+            "patient_id": ["p1", "p2", "p3", "p4"],
+            "label": [0, 0, 1, 1],
+            "probability_csPCa": [0.1, 0.3, 0.42, 0.48],
+            "prediction_validation_youden": [0, 0, 1, 1],
+            "model_name": ["transformer", "transformer", "transformer", "transformer"],
+        }
+    ).to_csv(pred_b, index=False)
+    outdir = tmp_path / "report_thresholded"
+    assert main(
+        [
+            "compare",
+            "--prediction",
+            f"ML={pred_a}",
+            "--prediction",
+            f"DL={pred_b}",
+            "--prediction-column",
+            "prediction_validation_youden",
+            "--outdir",
+            str(outdir),
+            "--n-bootstrap",
+            "10",
+        ]
+    ) == 0
+    metrics_df = pd.read_csv(outdir / "metrics_summary.csv")
+    assert set(metrics_df["f1"].round(4)) == {1.0}
+
+
 def test_cli_add_clinical_smoke(tmp_path):
     radiomics_csv = tmp_path / "radiomics.csv"
     clinical_csv = tmp_path / "clinical.csv"

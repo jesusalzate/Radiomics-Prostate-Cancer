@@ -31,12 +31,16 @@ def compute_clinical_metrics(
     y_prob: np.ndarray,
     *,
     threshold: float = 0.5,
+    y_pred: np.ndarray | None = None,
 ) -> dict[str, float]:
     """Compute the default clinical model-comparison metric set."""
 
     y_true = np.asarray(y_true).astype(int)
     y_prob = np.asarray(y_prob, dtype=float)
-    y_pred = (y_prob >= threshold).astype(int)
+    if y_pred is None:
+        y_pred = (y_prob >= threshold).astype(int)
+    else:
+        y_pred = np.asarray(y_pred).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
 
     def safe_auc(func):
@@ -69,6 +73,7 @@ def bootstrap_metric_confidence_intervals(
     y_true: np.ndarray,
     y_prob: np.ndarray,
     *,
+    y_pred: np.ndarray | None = None,
     group_ids: np.ndarray | None = None,
     threshold: float = 0.5,
     n_bootstrap: int = 1000,
@@ -87,7 +92,8 @@ def bootstrap_metric_confidence_intervals(
     metric_names = metric_names or PRIMARY_CLINICAL_METRICS
     y_true = np.asarray(y_true).astype(int)
     y_prob = np.asarray(y_prob, dtype=float)
-    point = compute_clinical_metrics(y_true, y_prob, threshold=threshold)
+    y_pred = None if y_pred is None else np.asarray(y_pred).astype(int)
+    point = compute_clinical_metrics(y_true, y_prob, threshold=threshold, y_pred=y_pred)
     rng = np.random.default_rng(seed)
     samples = {metric_name: [] for metric_name in metric_names}
     for _ in range(n_bootstrap):
@@ -97,7 +103,12 @@ def bootstrap_metric_confidence_intervals(
             bootstrap_idx = _sample_group_bootstrap_indices(y_true, np.asarray(group_ids), rng)
         if bootstrap_idx.size == 0 or len(np.unique(y_true[bootstrap_idx])) < 2:
             continue
-        metrics = compute_clinical_metrics(y_true[bootstrap_idx], y_prob[bootstrap_idx], threshold=threshold)
+        metrics = compute_clinical_metrics(
+            y_true[bootstrap_idx],
+            y_prob[bootstrap_idx],
+            threshold=threshold,
+            y_pred=y_pred[bootstrap_idx] if y_pred is not None else None,
+        )
         for metric_name in metric_names:
             samples[metric_name].append(metrics[metric_name])
 
@@ -172,13 +183,28 @@ def normalize_prediction_frame(
     for optional_column in ["patient_id", "study_id", "sample_id"]:
         if optional_column in df.columns and optional_column not in keep_columns:
             keep_columns.append(optional_column)
+    extra_columns = [
+        column
+        for column in df.columns
+        if (
+            column.startswith("prediction")
+            or column.startswith("threshold")
+            or column in {"predicted_label", "classification_threshold", "probability_raw", "prob_class_1_raw"}
+        )
+        and column not in keep_columns
+    ]
+    keep_columns.extend(extra_columns)
     normalized = df[keep_columns].copy()
     normalized = normalized.rename(
         columns={label_source: "true_label", probability_source: "probability"}
     )
+    if "predicted_label" in normalized.columns and "prediction" not in normalized.columns:
+        normalized = normalized.rename(columns={"predicted_label": "prediction"})
     normalized["model_name"] = model_name
     normalized[id_column] = normalized[id_column].astype(str)
-    return normalized[["model_name", id_column, "true_label", "probability"]]
+    ordered_columns = ["model_name", id_column, "true_label", "probability"]
+    optional_columns = [column for column in normalized.columns if column not in ordered_columns]
+    return normalized[ordered_columns + optional_columns]
 
 
 def align_prediction_frames(

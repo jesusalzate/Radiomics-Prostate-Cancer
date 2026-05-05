@@ -63,6 +63,17 @@ Deep CV outputs now also preserve both threshold views:
 - `cv_fold_metrics.csv` with both `fixed_0_5_*` and `validation_youden_*`
 - `cv_summary.json` with `oof_metrics_fixed_0_5` and `oof_metrics_validation_youden`
 
+Calibrated classical top-k final runs now preserve the same thresholded view in
+their flat and aggregated OOF exports:
+
+- `probability` / `prob_class_1` as the calibrated probability when calibration is enabled
+- `probability_raw` / `prob_class_1_raw`
+- `prediction_fixed_0_5`
+- `prediction_validation_youden`
+- `selected_threshold`
+- `threshold_strategy`
+- `probability_calibration`
+
 For runs started before those extra pooled fields were added, or for a clean
 threshold audit after the job completes, `prostate-radiomics postprocess-deep`
 writes:
@@ -75,6 +86,10 @@ writes:
 When invoked on a suite manifest, it also writes:
 
 - `suite_threshold_summary.csv`
+
+`prostate-radiomics compare` and `prostate-radiomics report` can optionally use
+precomputed binary predictions through `--prediction-column`, for example
+`prediction_validation_youden`.
 
 ## Git Policy
 

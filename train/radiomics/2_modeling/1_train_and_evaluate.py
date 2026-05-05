@@ -44,6 +44,7 @@ from sklearn.ensemble import (
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.feature_selection import VarianceThreshold
 from sklearn.impute import SimpleImputer
+from sklearn.isotonic import IsotonicRegression
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
@@ -688,6 +689,97 @@ def build_cv_fold_plan(
     )
 
 
+def choose_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
+    """Choose a binary threshold by maximizing Youden's J statistic."""
+
+    y_true = np.asarray(y_true).astype(int)
+    y_prob = np.asarray(y_prob, dtype=float)
+    if len(np.unique(y_true)) < 2:
+        return 0.5
+    fpr, tpr, thresholds = metrics.roc_curve(y_true, y_prob, pos_label=1)
+    finite_mask = np.isfinite(thresholds)
+    if not np.any(finite_mask):
+        return 0.5
+    youden = tpr[finite_mask] - fpr[finite_mask]
+    return float(thresholds[finite_mask][int(np.argmax(youden))])
+
+
+def predict_binary_scores(estimator, X_frame: pd.DataFrame | np.ndarray) -> np.ndarray:
+    """Return the best available continuous output for binary classifiers."""
+
+    if hasattr(estimator, "predict_proba"):
+        return estimator.predict_proba(X_frame)[:, 1]
+    if hasattr(estimator, "decision_function"):
+        return estimator.decision_function(X_frame)
+    return estimator.predict(X_frame).astype(float)
+
+
+def build_inner_reference_scores(
+    estimator,
+    X_train: pd.DataFrame,
+    y_train: np.ndarray,
+    groups_train: np.ndarray,
+    *,
+    n_splits: int = 3,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build train-only out-of-fold scores for calibration and threshold selection."""
+
+    y_train = np.asarray(y_train).astype(int)
+    groups_train = np.asarray(groups_train).astype(str)
+    unique_groups = np.unique(groups_train)
+    if len(unique_groups) < 2 or len(np.unique(y_train)) < 2:
+        return y_train.copy(), predict_binary_scores(estimator, X_train)
+
+    effective_splits = max(2, min(int(n_splits), len(unique_groups)))
+    splitter = GroupKFold(n_splits=effective_splits)
+    oof_scores = np.full(len(y_train), np.nan, dtype=float)
+
+    for inner_train_idx, inner_val_idx in splitter.split(X_train, y_train, groups_train):
+        inner_estimator = clone(estimator)
+        inner_estimator.fit(X_train.iloc[inner_train_idx], y_train[inner_train_idx])
+        oof_scores[inner_val_idx] = predict_binary_scores(inner_estimator, X_train.iloc[inner_val_idx])
+
+    valid_mask = np.isfinite(oof_scores)
+    if not np.any(valid_mask):
+        return y_train.copy(), predict_binary_scores(estimator, X_train)
+    return y_train[valid_mask], oof_scores[valid_mask]
+
+
+def fit_probability_calibrator(
+    y_true: np.ndarray,
+    raw_scores: np.ndarray,
+    method: str,
+):
+    """Fit a post-hoc calibrator on train-only out-of-fold scores."""
+
+    if method == "none":
+        return None
+    y_true = np.asarray(y_true).astype(int)
+    raw_scores = np.asarray(raw_scores, dtype=float)
+    if len(np.unique(y_true)) < 2:
+        return None
+    if method == "sigmoid":
+        calibrator = LogisticRegression(solver="lbfgs", max_iter=1000)
+        calibrator.fit(raw_scores.reshape(-1, 1), y_true)
+        return calibrator
+    if method == "isotonic":
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.fit(raw_scores, y_true)
+        return calibrator
+    raise ValueError(f"Unsupported probability calibration method: {method}")
+
+
+def apply_probability_calibrator(calibrator, raw_scores: np.ndarray, method: str) -> np.ndarray:
+    raw_scores = np.asarray(raw_scores, dtype=float)
+    if calibrator is None or method == "none":
+        return raw_scores
+    if method == "sigmoid":
+        return calibrator.predict_proba(raw_scores.reshape(-1, 1))[:, 1]
+    if method == "isotonic":
+        return calibrator.predict(raw_scores)
+    raise ValueError(f"Unsupported probability calibration method: {method}")
+
+
 def evaluate_model(
     model,
     classifier_name: str,
@@ -703,6 +795,10 @@ def evaluate_model(
     tune_inner_splits: int = 3,
     tune_random_state: int = 42,
     tune_search_n_jobs: int = 1,
+    probability_calibration: str = "none",
+    threshold_strategy: str = "fixed_0.5",
+    classification_threshold: float = 0.5,
+    calibration_inner_splits: int = 3,
 ):
     """Run grouped repeated cross-validation over a precomputed fold plan."""
 
@@ -732,10 +828,11 @@ def evaluate_model(
 
         X_train = X.iloc[train_idx][selected_features].copy()
         X_val = X.iloc[val_idx][selected_features].copy()
+        fold_groups_train = patient_ids[train_idx]
 
         fold_best_params = None
         if param_distributions:
-            inner_groups = patient_ids[train_idx]
+            inner_groups = fold_groups_train
             n_unique_inner_groups = int(len(np.unique(inner_groups)))
             effective_inner_splits = max(2, min(tune_inner_splits, n_unique_inner_groups))
             search_estimator = make_tuning_safe_estimator(
@@ -770,17 +867,38 @@ def evaluate_model(
             fold_model.fit(X_train, y_train)
 
         y_train_pred = fold_model.predict(X_train)
-        y_val_pred = fold_model.predict(X_val)
-
-        if hasattr(fold_model, "predict_proba"):
-            y_train_prob = fold_model.predict_proba(X_train)[:, 1]
-            y_val_prob = fold_model.predict_proba(X_val)[:, 1]
-        elif hasattr(fold_model, "decision_function"):
-            y_train_prob = fold_model.decision_function(X_train)
-            y_val_prob = fold_model.decision_function(X_val)
-        else:
-            y_train_prob = None
-            y_val_prob = None
+        raw_train_scores = predict_binary_scores(fold_model, X_train)
+        raw_val_scores = predict_binary_scores(fold_model, X_val)
+        calibration_y_true, calibration_reference_scores = build_inner_reference_scores(
+            estimator=fold_model,
+            X_train=X_train,
+            y_train=y_train,
+            groups_train=fold_groups_train,
+            n_splits=calibration_inner_splits,
+        )
+        calibrator = fit_probability_calibrator(
+            calibration_y_true,
+            calibration_reference_scores,
+            probability_calibration,
+        )
+        if probability_calibration != "none" and calibrator is None:
+            log_progress(
+                f"{classifier_name} | Fold {global_fold_index}/{total_folds} | "
+                f"probability calibration requested ({probability_calibration}) "
+                "but calibration reference scores could not support it; using raw scores."
+            )
+        calibration_reference_prob = apply_probability_calibrator(
+            calibrator,
+            calibration_reference_scores,
+            probability_calibration,
+        )
+        y_train_prob = apply_probability_calibrator(calibrator, raw_train_scores, probability_calibration)
+        y_val_prob = apply_probability_calibrator(calibrator, raw_val_scores, probability_calibration)
+        val_youden_threshold = choose_threshold(calibration_y_true, calibration_reference_prob)
+        selected_threshold = classification_threshold if threshold_strategy == "fixed_0.5" else val_youden_threshold
+        y_val_pred_fixed_0_5 = (y_val_prob >= classification_threshold).astype(int)
+        y_val_pred_validation_youden = (y_val_prob >= val_youden_threshold).astype(int)
+        y_val_pred = y_val_pred_fixed_0_5 if threshold_strategy == "fixed_0.5" else y_val_pred_validation_youden
 
         try:
             train_auc = roc_auc_score(y_train, y_train_prob) if y_train_prob is not None else np.nan
@@ -811,6 +929,7 @@ def evaluate_model(
                 "train_auc": train_auc,
                 "train_f1": f1_score(y_train, y_train_pred, average="binary", zero_division=0),
                 "val_auc": val_auc,
+                "val_auc_raw": roc_auc_score(y_val, raw_val_scores) if len(np.unique(y_val)) > 1 else np.nan,
                 "val_mcc": matthews_corrcoef(y_val, y_val_pred),
                 "val_kappa": cohen_kappa_score(y_val, y_val_pred),
                 "val_f1_binary": f1_score(y_val, y_val_pred, average="binary", zero_division=0),
@@ -821,6 +940,10 @@ def evaluate_model(
                 "val_ppv": precision_score(y_val, y_val_pred, pos_label=1, zero_division=0),
                 "val_npv": tn / (tn + fn) if (tn + fn) > 0 else np.nan,
                 "val_balanced_accuracy": balanced_accuracy_score(y_val, y_val_pred),
+                "validation_youden_threshold": val_youden_threshold,
+                "selected_threshold": selected_threshold,
+                "threshold_strategy": threshold_strategy,
+                "probability_calibration": probability_calibration,
                 "num_selected_features": len(selected_features),
                 "selected_features": selected_features,
                 "per_class_precision": per_class_precision.tolist(),
@@ -841,6 +964,7 @@ def evaluate_model(
             f"val_auc={format_metric(completed_fold_result['val_auc'])} | "
             f"val_f1={format_metric(completed_fold_result['val_f1_binary'])} | "
             f"val_bal_acc={format_metric(completed_fold_result['val_balanced_accuracy'])} | "
+            f"threshold={selected_threshold:.4f} | "
             f"running_mean_auc={format_metric(running_auc_mean)} | "
             f"running_median_auc={format_metric(running_auc_median)} | "
             f"running_mean_bal_acc={format_metric(running_bal_acc_mean)}"
@@ -855,8 +979,15 @@ def evaluate_model(
                 "study_ids": study_ids[val_idx].tolist(),
                 "y_val": y_val,
                 "y_val_pred": y_val_pred,
+                "y_val_pred_fixed_0_5": y_val_pred_fixed_0_5,
+                "y_val_pred_validation_youden": y_val_pred_validation_youden,
                 "y_val_prob": y_val_prob,
+                "y_val_prob_raw": raw_val_scores,
                 "selected_features": selected_features,
+                "validation_youden_threshold": float(val_youden_threshold),
+                "selected_threshold": float(selected_threshold),
+                "threshold_strategy": threshold_strategy,
+                "probability_calibration": probability_calibration,
             }
         )
         if on_fold_complete is not None:
@@ -879,9 +1010,13 @@ def build_flat_prediction_table(predictions_data: list[dict]) -> pd.DataFrame:
         classifier_name = classifier_bundle["Classifier"]
         for fold_info in classifier_bundle["folds"]:
             probabilities = fold_info["y_val_prob"]
+            raw_probabilities = fold_info.get("y_val_prob_raw")
             for row_index, sample_id in enumerate(fold_info["sample_ids"]):
                 probability_positive = (
                     float(probabilities[row_index]) if probabilities is not None else np.nan
+                )
+                probability_positive_raw = (
+                    float(raw_probabilities[row_index]) if raw_probabilities is not None else np.nan
                 )
                 flat_rows.append(
                     {
@@ -893,7 +1028,20 @@ def build_flat_prediction_table(predictions_data: list[dict]) -> pd.DataFrame:
                         "study_id": fold_info["study_ids"][row_index],
                         "true_label": int(fold_info["y_val"][row_index]),
                         "predicted_label": int(fold_info["y_val_pred"][row_index]),
+                        "prediction": int(fold_info["y_val_pred"][row_index]),
+                        "prediction_fixed_0_5": int(fold_info["y_val_pred_fixed_0_5"][row_index]),
+                        "prediction_validation_youden": int(
+                            fold_info["y_val_pred_validation_youden"][row_index]
+                        ),
                         "prob_class_1": probability_positive,
+                        "probability": probability_positive,
+                        "prob_class_1_raw": probability_positive_raw,
+                        "probability_raw": probability_positive_raw,
+                        "threshold_fixed_0_5": 0.5,
+                        "threshold_validation_youden": float(fold_info["validation_youden_threshold"]),
+                        "selected_threshold": float(fold_info["selected_threshold"]),
+                        "threshold_strategy": fold_info["threshold_strategy"],
+                        "probability_calibration": fold_info["probability_calibration"],
                         "selected_features": fold_info["selected_features"],
                     }
                 )
@@ -922,22 +1070,48 @@ def aggregate_oof_predictions(flat_predictions_df: pd.DataFrame, threshold: floa
         )
         .agg(
             prob_class_1=("prob_class_1", "mean"),
+            probability=("probability", "mean"),
+            prob_class_1_raw=("prob_class_1_raw", "mean"),
+            probability_raw=("probability_raw", "mean"),
             num_validation_predictions=("prob_class_1", "size"),
             mean_predicted_label=("predicted_label", "mean"),
+            mean_prediction_fixed_0_5=("prediction_fixed_0_5", "mean"),
+            mean_prediction_validation_youden=("prediction_validation_youden", "mean"),
+            threshold_validation_youden=("threshold_validation_youden", "mean"),
+            selected_threshold=("selected_threshold", "mean"),
+            threshold_strategy=("threshold_strategy", "first"),
+            probability_calibration=("probability_calibration", "first"),
         )
         .sort_values(by=["Classifier", "sample_id"])
     )
-    aggregated_df["predicted_label"] = (aggregated_df["prob_class_1"] >= threshold).astype(int)
+    aggregated_df["prediction_fixed_0_5"] = (aggregated_df["prob_class_1"] >= 0.5).astype(int)
+    aggregated_df["prediction_validation_youden"] = (
+        aggregated_df["mean_prediction_validation_youden"] >= 0.5
+    ).astype(int)
+    aggregated_df["predicted_label"] = np.where(
+        aggregated_df["threshold_strategy"].astype(str) == "validation_youden",
+        aggregated_df["prediction_validation_youden"],
+        aggregated_df["prediction_fixed_0_5"],
+    ).astype(int)
+    aggregated_df["prediction"] = aggregated_df["predicted_label"]
     aggregated_df["classification_threshold"] = threshold
     return aggregated_df
 
 
-def compute_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float = 0.5) -> dict:
+def compute_binary_metrics(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    threshold: float = 0.5,
+    y_pred: np.ndarray | None = None,
+) -> dict:
     """Compute threshold-based and threshold-free binary classification metrics."""
 
     y_true = np.asarray(y_true).astype(int)
     y_prob = np.asarray(y_prob, dtype=float)
-    y_pred = (y_prob >= threshold).astype(int)
+    if y_pred is None:
+        y_pred = (y_prob >= threshold).astype(int)
+    else:
+        y_pred = np.asarray(y_pred).astype(int)
 
     try:
         auc_value = roc_auc_score(y_true, y_prob)
@@ -985,10 +1159,16 @@ def bootstrap_patient_level_performance(
         for class_label in sorted(patient_labels.unique())
     }
 
+    point_y_pred = (
+        aggregated_predictions_df["predicted_label"].to_numpy(dtype=int)
+        if "predicted_label" in aggregated_predictions_df.columns
+        else None
+    )
     point_metrics = compute_binary_metrics(
         y_true=aggregated_predictions_df["true_label"].to_numpy(),
         y_prob=aggregated_predictions_df["prob_class_1"].to_numpy(),
         threshold=threshold,
+        y_pred=point_y_pred,
     )
 
     bootstrap_distributions = {metric_name: [] for metric_name in point_metrics}
@@ -1020,6 +1200,9 @@ def bootstrap_patient_level_performance(
             y_true=bootstrap_df["true_label"].to_numpy(),
             y_prob=bootstrap_df["prob_class_1"].to_numpy(),
             threshold=threshold,
+            y_pred=bootstrap_df["predicted_label"].to_numpy(dtype=int)
+            if "predicted_label" in bootstrap_df.columns
+            else None,
         )
         for metric_name, metric_value in bootstrap_metrics.items():
             bootstrap_distributions[metric_name].append(metric_value)
@@ -1488,6 +1671,29 @@ def main():
         help="Probability threshold used for aggregated threshold-based OOF metrics.",
     )
     parser.add_argument(
+        "--threshold_strategy",
+        choices=["fixed_0.5", "validation_youden"],
+        default="fixed_0.5",
+        help=(
+            "How to derive binary predictions from fold probabilities. "
+            "'fixed_0.5' uses a global 0.5 cutoff; 'validation_youden' uses a train-only inner-CV threshold."
+        ),
+    )
+    parser.add_argument(
+        "--probability_calibration",
+        choices=["none", "sigmoid", "isotonic"],
+        default="none",
+        help=(
+            "Optional post-hoc calibration fitted on train-only inner-CV scores and applied to each outer fold."
+        ),
+    )
+    parser.add_argument(
+        "--calibration_inner_splits",
+        type=int,
+        default=3,
+        help="Number of inner GroupKFold splits used to fit train-only calibration references.",
+    )
+    parser.add_argument(
         "--min_features",
         type=int,
         default=10,
@@ -1696,7 +1902,10 @@ def main():
                 "study_ids": parse_serialized_list,
                 "y_val": parse_serialized_list,
                 "y_pred": parse_serialized_list,
+                "y_pred_fixed_0_5": parse_serialized_list,
+                "y_pred_validation_youden": parse_serialized_list,
                 "y_prob": parse_serialized_list,
+                "y_prob_raw": parse_serialized_list,
                 "selected_features": parse_serialized_list,
             },
         )
@@ -1733,6 +1942,13 @@ def main():
             f"minority_samples_per_feature={args.minority_samples_per_feature}, "
             f"fdr_alpha={args.fdr_alpha}, correlation_threshold={args.correlation_threshold}, "
             f"selection_n_jobs={args.selection_n_jobs}"
+        )
+        log_progress(
+            "Calibration/threshold settings: "
+            f"probability_calibration={args.probability_calibration}, "
+            f"threshold_strategy={args.threshold_strategy}, "
+            f"classification_threshold={args.classification_threshold}, "
+            f"calibration_inner_splits={args.calibration_inner_splits}"
         )
         if args.experiment_name:
             log_progress(f"Experiment name: {sanitize_experiment_name(args.experiment_name)}")
@@ -1980,6 +2196,10 @@ def main():
                 tune_inner_splits=args.tune_inner_splits,
                 tune_random_state=DEFAULT_BASE_RANDOM_STATE,
                 tune_search_n_jobs=args.tune_search_n_jobs,
+                probability_calibration=args.probability_calibration,
+                threshold_strategy=args.threshold_strategy,
+                classification_threshold=args.classification_threshold,
+                calibration_inner_splits=args.calibration_inner_splits,
             )
 
             for fold_metrics_row in fold_metrics:
@@ -2030,7 +2250,16 @@ def main():
                         "study_ids": fold_info["study_ids"],
                         "y_val": fold_info["y_val"].tolist(),
                         "y_pred": fold_info["y_val_pred"].tolist(),
+                        "y_pred_fixed_0_5": fold_info["y_val_pred_fixed_0_5"].tolist(),
+                        "y_pred_validation_youden": fold_info["y_val_pred_validation_youden"].tolist(),
                         "y_prob": fold_info["y_val_prob"].tolist() if fold_info["y_val_prob"] is not None else [],
+                        "y_prob_raw": (
+                            fold_info["y_val_prob_raw"].tolist() if fold_info["y_val_prob_raw"] is not None else []
+                        ),
+                        "validation_youden_threshold": fold_info["validation_youden_threshold"],
+                        "selected_threshold": fold_info["selected_threshold"],
+                        "threshold_strategy": fold_info["threshold_strategy"],
+                        "probability_calibration": fold_info["probability_calibration"],
                         "selected_features": fold_info["selected_features"],
                     }
                 )

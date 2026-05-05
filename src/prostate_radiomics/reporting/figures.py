@@ -253,6 +253,7 @@ def plot_confusion_matrix_panel(
     output_path: str | Path,
     *,
     threshold: float = 0.5,
+    prediction_column: str | None = None,
     top_n: int = 3,
 ) -> Path:
     """Create normalized confusion matrices for the top-ranked models."""
@@ -263,7 +264,10 @@ def plot_confusion_matrix_panel(
     for axis, model_name in zip(axes[0], top_models):
         model_df = predictions_df[predictions_df["model_name"] == model_name]
         y_true = model_df["true_label"].to_numpy(dtype=int)
-        y_pred = model_df["probability"].to_numpy(dtype=float) >= threshold
+        if prediction_column and prediction_column in model_df.columns:
+            y_pred = model_df[prediction_column].to_numpy(dtype=int)
+        else:
+            y_pred = model_df["probability"].to_numpy(dtype=float) >= threshold
         matrix = confusion_matrix(y_true, y_pred, labels=[0, 1])
         row_sums = matrix.sum(axis=1, keepdims=True)
         normalized = np.divide(matrix, row_sums, out=np.zeros_like(matrix, dtype=float), where=row_sums != 0)

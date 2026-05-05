@@ -83,8 +83,23 @@ prostate-radiomics train-deep \
 
 prostate-radiomics train-deep \
   --config configs/experiments/clinical_augmented_5fold.yaml
+
+prostate-radiomics train-deep \
+  --config configs/experiments/clinical_augmented_dual_deep_5fold.yaml
 ```
 
 Then compare the OOF predictions with `prostate-radiomics compare`. The report
 will show whether clinical variables improve AUROC, AUPRC, calibration, Brier
 score, threshold utility, and error profile.
+
+## Dual-Branch Deep Models
+
+The dual deep configurations treat `clinical_*` and radiomics features as
+different modalities:
+
+- one branch processes curated clinical variables;
+- one branch processes radiomics;
+- fusion happens late in the network.
+
+This is useful when you want the model to preserve source-specific processing
+instead of treating every column as one homogeneous tabular vector.

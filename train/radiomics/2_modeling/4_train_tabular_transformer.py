@@ -62,6 +62,7 @@ from train.common.runtime_utils import (
 )
 from train.radiomics.deep_models import (
     DeepTabularConfig,
+    DUAL_INPUT_ARCHITECTURES,
     build_model_by_architecture,
     predict_positive_probability,
     prepare_targets_for_architecture,
@@ -87,7 +88,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run_name", default="features_all_gland_transformer")
     parser.add_argument(
         "--architecture",
-        choices=["transformer", "capsnet", "transformer_capsnet"],
+        choices=[
+            "transformer",
+            "capsnet",
+            "transformer_capsnet",
+            "dual_transformer",
+            "dual_capsnet",
+            "dual_transformer_capsnet",
+        ],
         default="transformer",
     )
     parser.add_argument("--label_column", default="label")
@@ -290,6 +298,12 @@ def summarize_probabilities(y_prob: np.ndarray, prefix: str) -> dict:
     }
 
 
+def split_feature_modalities(selected_features: list[str]) -> tuple[list[str], list[str]]:
+    clinical_features = [feature_name for feature_name in selected_features if feature_name.startswith("clinical_")]
+    radiomics_features = [feature_name for feature_name in selected_features if not feature_name.startswith("clinical_")]
+    return clinical_features, radiomics_features
+
+
 def compute_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict:
     y_pred = (y_prob >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
@@ -446,17 +460,76 @@ def train_and_evaluate_single_split(
         encoding="utf-8",
     )
 
-    X_selected = X_all[selected_features].replace([np.inf, -np.inf], np.nan)
-    imputer = SimpleImputer(strategy="median")
-    scaler = StandardScaler()
+    clinical_features, radiomics_features = split_feature_modalities(selected_features)
+    all_clinical_features, all_radiomics_features = split_feature_modalities(list(X_all.columns))
+    if args.architecture in DUAL_INPUT_ARCHITECTURES:
+        if not clinical_features:
+            if not all_clinical_features:
+                raise ValueError(
+                    f"{fold_label} | {args.architecture} requires at least one clinical feature "
+                    "prefixed with 'clinical_'."
+                )
+            clinical_features = list(all_clinical_features)
+            log_progress(
+                f"{fold_label} | {args.architecture} fallback: shared selection contains no clinical features; "
+                f"using all available clinical features instead | count={len(clinical_features)}"
+            )
+        if not radiomics_features:
+            if not all_radiomics_features:
+                raise ValueError(f"{fold_label} | {args.architecture} requires at least one radiomics feature.")
+            radiomics_features = list(all_radiomics_features)
+            log_progress(
+                f"{fold_label} | {args.architecture} fallback: shared selection contains no radiomics features; "
+                f"using all available radiomics features instead | count={len(radiomics_features)}"
+            )
+        effective_selected_features = clinical_features + radiomics_features
 
-    X_train = imputer.fit_transform(X_selected.loc[train_mask])
-    X_val = imputer.transform(X_selected.loc[val_mask])
-    X_test = imputer.transform(X_selected.loc[test_mask])
+        X_clinical = X_all[clinical_features].replace([np.inf, -np.inf], np.nan)
+        X_radiomics = X_all[radiomics_features].replace([np.inf, -np.inf], np.nan)
+        clinical_imputer = SimpleImputer(strategy="median")
+        radiomics_imputer = SimpleImputer(strategy="median")
+        clinical_scaler = StandardScaler()
+        radiomics_scaler = StandardScaler()
 
-    X_train = scaler.fit_transform(X_train)
-    X_val = scaler.transform(X_val)
-    X_test = scaler.transform(X_test)
+        X_train_clinical = clinical_scaler.fit_transform(clinical_imputer.fit_transform(X_clinical.loc[train_mask]))
+        X_val_clinical = clinical_scaler.transform(clinical_imputer.transform(X_clinical.loc[val_mask]))
+        X_test_clinical = clinical_scaler.transform(clinical_imputer.transform(X_clinical.loc[test_mask]))
+
+        X_train_radiomics = radiomics_scaler.fit_transform(radiomics_imputer.fit_transform(X_radiomics.loc[train_mask]))
+        X_val_radiomics = radiomics_scaler.transform(radiomics_imputer.transform(X_radiomics.loc[val_mask]))
+        X_test_radiomics = radiomics_scaler.transform(radiomics_imputer.transform(X_radiomics.loc[test_mask]))
+
+        X_train = [X_train_clinical, X_train_radiomics]
+        X_val = [X_val_clinical, X_val_radiomics]
+        X_test = [X_test_clinical, X_test_radiomics]
+        input_feature_count = len(effective_selected_features)
+        modality_summary = {
+            "clinical_feature_count": len(clinical_features),
+            "radiomics_feature_count": len(radiomics_features),
+        }
+        (output_dir / "selected_features.txt").write_text(
+            "\n".join(effective_selected_features) + "\n",
+            encoding="utf-8",
+        )
+        (output_dir / "selected_clinical_features.txt").write_text("\n".join(clinical_features) + "\n", encoding="utf-8")
+        (output_dir / "selected_radiomics_features.txt").write_text("\n".join(radiomics_features) + "\n", encoding="utf-8")
+    else:
+        X_selected = X_all[selected_features].replace([np.inf, -np.inf], np.nan)
+        imputer = SimpleImputer(strategy="median")
+        scaler = StandardScaler()
+
+        X_train = imputer.fit_transform(X_selected.loc[train_mask])
+        X_val = imputer.transform(X_selected.loc[val_mask])
+        X_test = imputer.transform(X_selected.loc[test_mask])
+
+        X_train = scaler.fit_transform(X_train)
+        X_val = scaler.transform(X_val)
+        X_test = scaler.transform(X_test)
+        input_feature_count = X_train.shape[1]
+        modality_summary = {
+            "clinical_feature_count": len(clinical_features),
+            "radiomics_feature_count": len(radiomics_features),
+        }
 
     y_train = y_all[train_mask]
     y_val = y_all[val_mask]
@@ -464,7 +537,10 @@ def train_and_evaluate_single_split(
     log_progress(
         f"{fold_label} | split summary | train {summarize_binary_labels(y_train)} | "
         f"val {summarize_binary_labels(y_val)} | test {summarize_binary_labels(y_test)} | "
-        f"selected_features={len(selected_features)} | selection_source={selection_source}"
+        f"selected_features={len(selected_features)} | "
+        f"clinical_features={modality_summary['clinical_feature_count']} | "
+        f"radiomics_features={modality_summary['radiomics_feature_count']} | "
+        f"selection_source={selection_source}"
     )
 
     config = DeepTabularConfig(
@@ -475,9 +551,13 @@ def train_and_evaluate_single_split(
     )
     model = build_model_by_architecture(
         architecture=args.architecture,
-        input_dim=X_train.shape[1],
+        input_dim=None if args.architecture in DUAL_INPUT_ARCHITECTURES else input_feature_count,
         config=config,
         feature_names=selected_features,
+        clinical_input_dim=X_train[0].shape[1] if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
+        radiomics_input_dim=X_train[1].shape[1] if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
+        clinical_feature_names=clinical_features if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
+        radiomics_feature_names=radiomics_features if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
     )
     (output_dir / "model_summary.txt").write_text(
         "\n".join(
@@ -485,7 +565,9 @@ def train_and_evaluate_single_split(
                 f"Model: {model.name}",
                 f"Architecture: {args.architecture}",
                 f"Fold label: {fold_label}",
-                f"Input features: {X_train.shape[1]}",
+                f"Input features: {input_feature_count}",
+                f"Clinical features: {modality_summary['clinical_feature_count']}",
+                f"Radiomics features: {modality_summary['radiomics_feature_count']}",
                 f"Train/val/test samples: {len(y_train)}/{len(y_val)}/{len(y_test)}",
             ]
         )
@@ -501,7 +583,7 @@ def train_and_evaluate_single_split(
         verbose=1,
     )
     log_progress(
-        f"{fold_label} | training {args.architecture} | input_dim={X_train.shape[1]} | "
+        f"{fold_label} | training {args.architecture} | input_dim={input_feature_count} | "
         f"batch_size={config.batch_size} | epochs={config.epochs} | patience={config.patience}"
     )
     y_train_model = prepare_targets_for_architecture(
@@ -516,7 +598,7 @@ def train_and_evaluate_single_split(
     )
     class_weight = None
     if args.architecture == "capsnet" or (
-        args.architecture == "transformer" and args.transformer_loss == "bce"
+        args.architecture in {"transformer", "dual_transformer"} and args.transformer_loss == "bce"
     ):
         classes = np.unique(y_train)
         weights = compute_class_weight("balanced", classes=classes, y=y_train)
@@ -558,7 +640,7 @@ def train_and_evaluate_single_split(
             predictions[optional_column] = df.loc[test_mask, optional_column].values
     predictions["model_name"] = args.architecture
     predictions["fold_label"] = fold_label
-    predictions["selected_feature_count"] = len(selected_features)
+    predictions["selected_feature_count"] = input_feature_count
     predictions["threshold"] = threshold
     predictions["probability_csPCa"] = test_prob
     predictions["prediction"] = test_pred
@@ -602,7 +684,8 @@ def train_and_evaluate_single_split(
         "model_config": asdict(config),
         "selection_summary": selection_summary,
         "selection_source": selection_source,
-        "selected_feature_count": len(selected_features),
+        "selected_feature_count": input_feature_count,
+        "modality_summary": modality_summary,
         "threshold_diagnostics": probability_summary,
         "architecture": args.architecture,
         "model_name": model.name,

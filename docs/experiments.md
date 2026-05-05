@@ -50,6 +50,14 @@ prostate-radiomics train-deep \
 The deep suite uses the PI-CAI folds and the shared feature plan from the
 feature-prep run so fold membership and selected features stay aligned.
 
+If `shared_fold_feature_plan.json` is missing, run the feature-prep classical
+config first:
+
+```bash
+prostate-radiomics train-classical \
+  --config configs/experiments/classical_feature_prep_5fold.yaml
+```
+
 ## 6. Reduced Clinical Report
 
 ```bash
@@ -97,6 +105,25 @@ Then run the clinical-augmented deep suite:
 prostate-radiomics train-deep \
   --config configs/experiments/clinical_augmented_5fold.yaml
 ```
+
+## 9. Clinical-Augmented Dual-Branch Deep Suite
+
+For models with a dedicated clinical branch and a dedicated radiomics branch:
+
+```bash
+prostate-radiomics train-deep \
+  --config configs/experiments/clinical_augmented_dual_deep_5fold.yaml
+```
+
+Registered dual architectures:
+
+- `dual_transformer`
+- `dual_capsnet`
+- `dual_transformer_capsnet`
+
+These architectures expect `clinical_*` columns in the feature table. If the
+shared feature plan selected no clinical variables for a fold, the trainer falls
+back to all available `clinical_*` columns for that dual branch.
 
 For a fair comparison, keep the same PI-CAI fold JSON and compare:
 

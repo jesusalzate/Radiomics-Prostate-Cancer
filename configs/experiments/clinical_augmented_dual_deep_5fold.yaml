@@ -1,15 +1,15 @@
 train_deep:
-  csv: features_all_gland.csv
+  csv: features_all_gland_clinical.csv
   data_pre: artifacts/radiomics
-  output_dir: results/radiomics/deep_tabular_models_updated
-  run_prefix: more_features_v2_final_5fold
+  output_dir: results/radiomics/deep_tabular_models_clinical_augmented
+  run_prefix: clinical_augmented_dual_final_5fold
   architectures:
-    - transformer
-    - capsnet
-    - transformer_capsnet
+    - dual_transformer
+    - dual_capsnet
+    - dual_transformer_capsnet
   feature_selection: most_discriminant
   predefined_folds_json: results/radiomics/picai_nnunet_5folds.json
-  shared_feature_folds_json: results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_feature_prep/shared_fold_feature_plan.json
+  shared_feature_folds_json: results/radiomics/most_discriminant/gland/clinical_augmented_final_5fold_feature_prep/shared_fold_feature_plan.json
   predefined_fold_id_type: sample_id
   min_features: 30
   max_features_cap: 100

@@ -40,9 +40,12 @@ prostate-radiomics train-classical \
 prostate-radiomics train-deep \
   --config configs/experiments/deep_5fold.yaml
 
+prostate-radiomics train-deep \
+  --config configs/experiments/clinical_augmented_dual_deep_5fold.yaml
+
 prostate-radiomics compare \
   --prediction "SVM=results/radiomics/most_discriminant/gland/oof_predictions_aggregated_features_all_gland_most_discriminant.csv" \
-  --prediction "Transformer=results/radiomics/deep_tabular_models/clinical_5fold_transformer/cv_oof_predictions.csv" \
+  --prediction "Transformer=results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_transformer/cv_oof_predictions.csv" \
   --outdir results/radiomics/clinical_comparison
 
 prostate-radiomics interpret \
@@ -104,6 +107,10 @@ Interpretability is a first-class workflow, but it is intentionally explicit:
 `prostate-radiomics interpret` generates SHAP/native ML importance, integrated
 gradients/native DL importance, permutation importance, and feature-overlap
 figures under the configured benchmark directory.
+
+The deep stack now also supports dual-branch architectures for clinical-plus-
+radiomics tables: `dual_transformer`, `dual_capsnet`, and
+`dual_transformer_capsnet`.
 
 See `docs/workflow.md`, `docs/experiments.md`, `docs/clinical_features.md`,
 `docs/interpretability.md`, `docs/metrics.md`, `docs/outputs.md`, and

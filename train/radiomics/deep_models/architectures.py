@@ -21,7 +21,8 @@ from train.radiomics.deep_models.layers import (
 from train.radiomics.deep_models.losses import focal_loss, margin_loss
 
 
-CAPSNET_ARCHITECTURES = {"capsnet"}
+PURE_CAPSNET_ARCHITECTURES = {"capsnet"}
+DUAL_INPUT_ARCHITECTURES = {"dual_transformer", "dual_capsnet", "dual_transformer_capsnet"}
 
 
 def _cosine_restart_optimizer(config: DeepTabularConfig) -> Adam:
@@ -110,44 +111,122 @@ def _semantic_feature_groups(feature_names: list[str] | None) -> list[tuple[str,
     return [(name, grouped[name]) for name in group_order if grouped.get(name)]
 
 
-def _dense_residual_encoder(inputs, config: DeepTabularConfig):
-    x = layers.Dense(64, activation="gelu")(inputs)
-    x = layers.LayerNormalization(epsilon=1e-6)(x)
-    x = layers.Dropout(config.dense_dropout)(x)
+def _layer_name(prefix: str | None, stem: str) -> str | None:
+    if not prefix:
+        return stem
+    return f"{prefix}_{stem}"
+
+
+def _dense_residual_encoder(inputs, config: DeepTabularConfig, prefix: str | None = None):
+    x = layers.Dense(64, activation="gelu", name=_layer_name(prefix, "dense1"))(inputs)
+    x = layers.LayerNormalization(epsilon=1e-6, name=_layer_name(prefix, "ln1"))(x)
+    x = layers.Dropout(config.dense_dropout, name=_layer_name(prefix, "drop1"))(x)
 
     residual = x
-    x = layers.Dense(64, activation="gelu")(x)
-    x = layers.LayerNormalization(epsilon=1e-6)(x)
-    x = layers.Dropout(config.dense_dropout)(x)
-    x = layers.Add(name="dense_residual")([x, residual])
-    return layers.LayerNormalization(epsilon=1e-6)(x)
+    x = layers.Dense(64, activation="gelu", name=_layer_name(prefix, "dense2"))(x)
+    x = layers.LayerNormalization(epsilon=1e-6, name=_layer_name(prefix, "ln2"))(x)
+    x = layers.Dropout(config.dense_dropout, name=_layer_name(prefix, "drop2"))(x)
+    x = layers.Add(name=_layer_name(prefix, "dense_residual"))([x, residual])
+    return layers.LayerNormalization(epsilon=1e-6, name=_layer_name(prefix, "residual_out"))(x)
 
 
-def _build_semantic_tokens(inputs, feature_names: list[str], config: DeepTabularConfig):
+def _build_semantic_tokens(inputs, feature_names: list[str], config: DeepTabularConfig, prefix: str | None = None):
     token_tensors = []
     for group_name, indices in _semantic_feature_groups(feature_names):
-        group_features = FeatureSlice(indices, name=f"{group_name}_features")(inputs)
+        group_features = FeatureSlice(indices, name=_layer_name(prefix, f"{group_name}_features"))(inputs)
         token = layers.Dense(
             config.projection_dim,
             activation="gelu",
-            name=f"{group_name}_token_projection",
+            name=_layer_name(prefix, f"{group_name}_token_projection"),
         )(group_features)
-        token_tensors.append(layers.Reshape((1, config.projection_dim), name=f"{group_name}_token")(token))
+        token_tensors.append(
+            layers.Reshape((1, config.projection_dim), name=_layer_name(prefix, f"{group_name}_token"))(token)
+        )
     if not token_tensors:
         return None
-    return layers.Concatenate(axis=1, name="semantic_radiomics_tokens")(token_tensors)
+    return layers.Concatenate(axis=1, name=_layer_name(prefix, "semantic_radiomics_tokens"))(token_tensors)
 
 
-def _build_learned_tokens(encoded, config: DeepTabularConfig):
+def _build_learned_tokens(encoded, config: DeepTabularConfig, prefix: str | None = None):
     token_width = config.num_tokens * config.projection_dim
     x = layers.Dense(
         token_width,
         activation="gelu",
         kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+        name=_layer_name(prefix, "token_dense"),
     )(encoded)
-    x = layers.LayerNormalization(epsilon=1e-6)(x)
-    x = layers.Dropout(config.dense_dropout)(x)
-    return layers.Reshape((config.num_tokens, config.projection_dim))(x)
+    x = layers.LayerNormalization(epsilon=1e-6, name=_layer_name(prefix, "token_ln"))(x)
+    x = layers.Dropout(config.dense_dropout, name=_layer_name(prefix, "token_drop"))(x)
+    return layers.Reshape((config.num_tokens, config.projection_dim), name=_layer_name(prefix, "token_reshape"))(x)
+
+
+def _build_transformer_branch(
+    *,
+    inputs,
+    config: DeepTabularConfig,
+    prefix: str,
+    feature_names: list[str] | None = None,
+    use_semantic_tokens: bool = False,
+):
+    encoded = _dense_residual_encoder(inputs, config, prefix=prefix)
+    x = None
+    if use_semantic_tokens and feature_names:
+        x = _build_semantic_tokens(inputs, feature_names, config, prefix=prefix)
+    if x is None:
+        x = _build_learned_tokens(encoded, config, prefix=prefix)
+    else:
+        encoded_token = layers.Dense(
+            config.projection_dim,
+            activation="gelu",
+            name=_layer_name(prefix, "global_encoded_token_projection"),
+        )(encoded)
+        encoded_token = layers.Reshape(
+            (1, config.projection_dim),
+            name=_layer_name(prefix, "global_encoded_token"),
+        )(encoded_token)
+        x = layers.Concatenate(axis=1, name=_layer_name(prefix, "transformer_tokens"))([x, encoded_token])
+
+    num_tokens = x.shape[1] or config.num_tokens
+    x = PositionalEmbedding(int(num_tokens), config.projection_dim, name=_layer_name(prefix, "positional_embedding"))(x)
+    x = layers.SpatialDropout1D(config.token_dropout, name=_layer_name(prefix, "token_dropout"))(x)
+    for layer_index in range(config.num_transformer_layers):
+        x = transformer_block(
+            x,
+            projection_dim=config.projection_dim,
+            num_heads=config.num_heads,
+            dropout_rate=config.transformer_dropout,
+        )
+    x = layers.LayerNormalization(epsilon=1e-6, name=_layer_name(prefix, "final_ln"))(x)
+    x = AttentionPooling1D(units=32, name=_layer_name(prefix, "att_pool"))(x)
+    x = layers.Dropout(0.3, name=_layer_name(prefix, "final_drop"))(x)
+    return x
+
+
+def _build_capsule_branch(inputs, config: DeepTabularConfig, prefix: str):
+    x = layers.Dense(
+        64,
+        activation="gelu",
+        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+        name=_layer_name(prefix, "dense1"),
+    )(inputs)
+    x = layers.BatchNormalization(name=_layer_name(prefix, "bn1"))(x)
+    x = layers.Dropout(config.dense_dropout, name=_layer_name(prefix, "drop1"))(x)
+    x = layers.Dense(
+        config.num_tokens * config.dim_capsules,
+        activation="gelu",
+        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+        name=_layer_name(prefix, "dense2"),
+    )(x)
+    x = layers.BatchNormalization(name=_layer_name(prefix, "bn2"))(x)
+    x = layers.Dropout(config.dense_dropout, name=_layer_name(prefix, "drop2"))(x)
+    x = layers.Reshape((config.num_tokens, config.dim_capsules), name=_layer_name(prefix, "primary_caps"))(x)
+    x = layers.Lambda(squash, name=_layer_name(prefix, "squash_primary"))(x)
+    return DigitCapsuleLayer(
+        num_capsules=config.num_capsules,
+        dim_capsules=config.dim_capsules,
+        routing_iter=config.routing_iterations,
+        name=_layer_name(prefix, "digit_caps"),
+    )(x)
 
 
 def build_tabular_transformer(
@@ -158,33 +237,13 @@ def build_tabular_transformer(
     """Build the improved tabular Transformer for radiomics features."""
 
     inputs = layers.Input(shape=(input_dim,), name="input_features")
-    encoded = _dense_residual_encoder(inputs, config)
-    x = _build_semantic_tokens(inputs, feature_names, config) if feature_names else None
-    if x is None:
-        x = _build_learned_tokens(encoded, config)
-    else:
-        encoded_token = layers.Dense(
-            config.projection_dim,
-            activation="gelu",
-            name="global_encoded_token_projection",
-        )(encoded)
-        encoded_token = layers.Reshape((1, config.projection_dim), name="global_encoded_token")(encoded_token)
-        x = layers.Concatenate(axis=1, name="transformer_tokens")([x, encoded_token])
-
-    num_tokens = x.shape[1] or config.num_tokens
-    x = PositionalEmbedding(int(num_tokens), config.projection_dim)(x)
-    x = layers.SpatialDropout1D(config.token_dropout, name="token_dropout")(x)
-    for _ in range(config.num_transformer_layers):
-        x = transformer_block(
-            x,
-            projection_dim=config.projection_dim,
-            num_heads=config.num_heads,
-            dropout_rate=config.transformer_dropout,
-        )
-
-    x = layers.LayerNormalization(epsilon=1e-6)(x)
-    x = AttentionPooling1D(units=32)(x)
-    x = layers.Dropout(0.3)(x)
+    x = _build_transformer_branch(
+        inputs=inputs,
+        config=config,
+        prefix="radiomics",
+        feature_names=feature_names,
+        use_semantic_tokens=bool(feature_names),
+    )
     outputs = layers.Dense(1, activation="sigmoid", name="output")(x)
 
     model = Model(inputs=inputs, outputs=outputs, name="radiomics_tabular_transformer")
@@ -300,11 +359,168 @@ def build_transformer_capsnet_model(input_dim: int, config: DeepTabularConfig) -
     return _compile_binary_capsule_probability_model(model, config)
 
 
+def build_dual_transformer_model(
+    clinical_input_dim: int,
+    radiomics_input_dim: int,
+    config: DeepTabularConfig,
+    radiomics_feature_names: list[str] | None = None,
+) -> Model:
+    clinical_inputs = layers.Input(shape=(clinical_input_dim,), name="clinical_input_features")
+    radiomics_inputs = layers.Input(shape=(radiomics_input_dim,), name="radiomics_input_features")
+
+    clinical_branch = _build_transformer_branch(
+        inputs=clinical_inputs,
+        config=config,
+        prefix="clinical",
+        feature_names=None,
+        use_semantic_tokens=False,
+    )
+    radiomics_branch = _build_transformer_branch(
+        inputs=radiomics_inputs,
+        config=config,
+        prefix="radiomics",
+        feature_names=radiomics_feature_names,
+        use_semantic_tokens=bool(radiomics_feature_names),
+    )
+    x = layers.Concatenate(name="fusion_concat")([clinical_branch, radiomics_branch])
+    x = layers.Dense(
+        32,
+        activation="gelu",
+        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+        name="fusion_dense",
+    )(x)
+    x = layers.BatchNormalization(name="fusion_bn")(x)
+    x = layers.Dropout(0.3, name="fusion_drop")(x)
+    outputs = layers.Dense(1, activation="sigmoid", name="output")(x)
+    model = Model(inputs=[clinical_inputs, radiomics_inputs], outputs=outputs, name="dual_tabular_transformer")
+    return _compile_transformer(model, config)
+
+
+def build_dual_capsnet_model(
+    clinical_input_dim: int,
+    radiomics_input_dim: int,
+    config: DeepTabularConfig,
+) -> Model:
+    clinical_inputs = layers.Input(shape=(clinical_input_dim,), name="clinical_input_features")
+    radiomics_inputs = layers.Input(shape=(radiomics_input_dim,), name="radiomics_input_features")
+
+    clinical_caps = _build_capsule_branch(clinical_inputs, config, prefix="clinical")
+    radiomics_caps = _build_capsule_branch(radiomics_inputs, config, prefix="radiomics")
+    x = layers.Concatenate(axis=1, name="fusion_concat")([clinical_caps, radiomics_caps])
+    x = layers.Flatten(name="fusion_flatten")(x)
+    x = layers.Dense(
+        32,
+        activation="gelu",
+        kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+        name="fusion_dense",
+    )(x)
+    x = layers.BatchNormalization(name="fusion_bn")(x)
+    x = layers.Dropout(0.3, name="fusion_drop")(x)
+    outputs = layers.Dense(1, activation="sigmoid", name="output")(x)
+    model = Model(inputs=[clinical_inputs, radiomics_inputs], outputs=outputs, name="dual_capsnet")
+    return _compile_binary_capsule_probability_model(model, config)
+
+
+def _build_dual_transformer_tokens(inputs, config: DeepTabularConfig, prefix: str, feature_names: list[str] | None = None):
+    encoded = _dense_residual_encoder(inputs, config, prefix=prefix)
+    token_dim = config.dim_capsules
+    x = None
+    if feature_names:
+        token_tensors = []
+        for group_name, indices in _semantic_feature_groups(feature_names):
+            group_features = FeatureSlice(indices, name=_layer_name(prefix, f"{group_name}_features"))(inputs)
+            token = layers.Dense(
+                token_dim,
+                activation="gelu",
+                name=_layer_name(prefix, f"{group_name}_token_projection"),
+            )(group_features)
+            token_tensors.append(
+                layers.Reshape((1, token_dim), name=_layer_name(prefix, f"{group_name}_token"))(token)
+            )
+        if token_tensors:
+            x = layers.Concatenate(axis=1, name=_layer_name(prefix, "semantic_tokens"))(token_tensors)
+    if x is None:
+        x = layers.Dense(
+            config.num_tokens * token_dim,
+            activation="gelu",
+            kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
+            name=_layer_name(prefix, "token_dense"),
+        )(encoded)
+        x = layers.BatchNormalization(name=_layer_name(prefix, "token_bn"))(x)
+        x = layers.Dropout(config.dense_dropout, name=_layer_name(prefix, "token_drop"))(x)
+        x = layers.Reshape((config.num_tokens, token_dim), name=_layer_name(prefix, "token_reshape"))(x)
+    x = PositionalEmbedding(int(x.shape[1] or config.num_tokens), token_dim, name=_layer_name(prefix, "positional_embedding"))(x)
+    for _ in range(config.num_transformer_layers):
+        x = transformer_block(
+            x,
+            projection_dim=token_dim,
+            num_heads=config.num_heads,
+            dropout_rate=config.transformer_dropout,
+        )
+    return layers.LayerNormalization(epsilon=1e-6, name=_layer_name(prefix, "final_ln"))(x)
+
+
+def build_dual_transformer_capsnet_model(
+    clinical_input_dim: int,
+    radiomics_input_dim: int,
+    config: DeepTabularConfig,
+    radiomics_feature_names: list[str] | None = None,
+) -> Model:
+    clinical_inputs = layers.Input(shape=(clinical_input_dim,), name="clinical_input_features")
+    radiomics_inputs = layers.Input(shape=(radiomics_input_dim,), name="radiomics_input_features")
+
+    clinical_tokens = _build_dual_transformer_tokens(
+        clinical_inputs,
+        config,
+        prefix="clinical",
+        feature_names=None,
+    )
+    radiomics_tokens = _build_dual_transformer_tokens(
+        radiomics_inputs,
+        config,
+        prefix="radiomics",
+        feature_names=radiomics_feature_names,
+    )
+    x = layers.Concatenate(axis=1, name="fusion_tokens")([clinical_tokens, radiomics_tokens])
+    x = layers.Lambda(
+        lambda tensor: squash(tensor),
+        output_shape=(2 * config.num_tokens, config.dim_capsules),
+        name="fusion_token_squash",
+    )(x)
+    digit_caps = DigitCapsuleLayer(
+        num_capsules=config.num_capsules,
+        dim_capsules=config.dim_capsules,
+        routing_iter=config.routing_iterations,
+        name="fusion_digit_caps",
+    )(x)
+    capsule_norms = layers.Lambda(
+        lambda tensor: tf.sqrt(tf.reduce_sum(tf.square(tensor), axis=-1) + tf.keras.backend.epsilon()),
+        output_shape=(config.num_capsules,),
+        name="fusion_capsule_norms",
+    )(digit_caps)
+    probabilities = layers.Softmax(name="fusion_capsule_softmax")(capsule_norms)
+    outputs = layers.Lambda(
+        lambda tensor: tensor[:, 1:2],
+        output_shape=(1,),
+        name="csPCa_probability",
+    )(probabilities)
+    model = Model(
+        inputs=[clinical_inputs, radiomics_inputs],
+        outputs=outputs,
+        name="dual_transformer_capsnet",
+    )
+    return _compile_binary_capsule_probability_model(model, config)
+
+
 def build_model_by_architecture(
     architecture: str,
-    input_dim: int,
+    input_dim: int | None,
     config: DeepTabularConfig,
     feature_names: list[str] | None = None,
+    clinical_input_dim: int | None = None,
+    radiomics_input_dim: int | None = None,
+    clinical_feature_names: list[str] | None = None,
+    radiomics_feature_names: list[str] | None = None,
 ) -> Model:
     if architecture == "transformer":
         return build_tabular_transformer(
@@ -316,17 +532,37 @@ def build_model_by_architecture(
         return build_capsnet_model(input_dim=input_dim, config=config)
     if architecture == "transformer_capsnet":
         return build_transformer_capsnet_model(input_dim=input_dim, config=config)
+    if architecture == "dual_transformer":
+        return build_dual_transformer_model(
+            clinical_input_dim=clinical_input_dim,
+            radiomics_input_dim=radiomics_input_dim,
+            config=config,
+            radiomics_feature_names=radiomics_feature_names,
+        )
+    if architecture == "dual_capsnet":
+        return build_dual_capsnet_model(
+            clinical_input_dim=clinical_input_dim,
+            radiomics_input_dim=radiomics_input_dim,
+            config=config,
+        )
+    if architecture == "dual_transformer_capsnet":
+        return build_dual_transformer_capsnet_model(
+            clinical_input_dim=clinical_input_dim,
+            radiomics_input_dim=radiomics_input_dim,
+            config=config,
+            radiomics_feature_names=radiomics_feature_names,
+        )
     raise ValueError(f"Unsupported architecture: {architecture}")
 
 
 def prepare_targets_for_architecture(architecture: str, y: np.ndarray, num_classes: int = 2):
-    if architecture in CAPSNET_ARCHITECTURES:
+    if architecture in PURE_CAPSNET_ARCHITECTURES:
         return tf.keras.utils.to_categorical(y, num_classes)
     return y
 
 
-def predict_positive_probability(model: Model, architecture: str, X: np.ndarray) -> np.ndarray:
+def predict_positive_probability(model: Model, architecture: str, X) -> np.ndarray:
     y_pred = model.predict(X, verbose=0)
-    if architecture in CAPSNET_ARCHITECTURES:
+    if architecture in PURE_CAPSNET_ARCHITECTURES:
         return np.asarray(y_pred)[:, 1]
     return np.asarray(y_pred).flatten()

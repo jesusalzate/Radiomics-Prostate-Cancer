@@ -10,7 +10,14 @@ import sys
 from pathlib import Path
 
 
-AVAILABLE_ARCHITECTURES = ["transformer", "capsnet", "transformer_capsnet"]
+AVAILABLE_ARCHITECTURES = [
+    "transformer",
+    "capsnet",
+    "transformer_capsnet",
+    "dual_transformer",
+    "dual_capsnet",
+    "dual_transformer_capsnet",
+]
 
 
 def parse_args() -> argparse.Namespace:

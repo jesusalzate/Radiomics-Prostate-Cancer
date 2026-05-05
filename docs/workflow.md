@@ -66,6 +66,13 @@ prostate-radiomics train-deep \
 Deep models should reuse the shared fold feature plan exported by the classical
 pipeline so ML and DL comparisons are aligned.
 
+For clinical-plus-radiomics dual-branch models, use:
+
+```bash
+prostate-radiomics train-deep \
+  --config configs/experiments/clinical_augmented_dual_deep_5fold.yaml
+```
+
 ## 6. Clinical Comparison
 
 ```bash

@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prostate-radiomics-ml"
+version = "0.1.0"
+description = "Radiomics-only prostate csPCa modeling workflow with a unified CLI."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy==1.26.4",
+  "pandas==2.2.3",
+  "scipy==1.11.4",
+  "scikit-learn==1.5.2",
+  "statsmodels==0.14.4",
+  "matplotlib==3.9.2",
+  "seaborn==0.13.2",
+  "PyYAML==6.0.2",
+  "joblib==1.4.2",
+]
+
+[project.optional-dependencies]
+extraction = [
+  "SimpleITK==2.4.0",
+  "pyradiomics==3.1.0",
+  "PyWavelets==1.8.0",
+  "pykwalify==1.8.0",
+  "tqdm==4.67.1",
+]
+deep = [
+  "tensorflow[and-cuda]==2.16.2",
+]
+interpretability = [
+  "shap==0.46.0",
+  "lime==0.2.0.1",
+  "SciencePlots==2.1.1",
+]
+dev = [
+  "pytest>=8.0",
+]
+
+[project.scripts]
+prostate-radiomics = "prostate_radiomics.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

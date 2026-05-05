@@ -1,0 +1,14 @@
+compare:
+  outdir: results/radiomics/clinical_comparison
+  id_column: sample_id
+  threshold: 0.5
+  n_bootstrap: 1000
+  report_level: summary
+  prediction: []
+
+report:
+  predictions: results/radiomics/clinical_comparison/predictions_oof.csv
+  outdir: results/radiomics/clinical_comparison
+  threshold: 0.5
+  n_bootstrap: 1000
+  report_level: summary

@@ -1,0 +1,23 @@
+interpretability:
+  csv: features_all_gland.csv
+  data_pre: artifacts/radiomics
+  predefined_folds_json: results/radiomics/picai_nnunet_5folds.json
+  shared_feature_folds_json: results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned/shared_fold_feature_plan.json
+  predefined_fold_id_type: sample_id
+  ml_results_csv: results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned/all_model_results.csv
+  ml_predictions_csv: results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned/all_fold_predictions.csv
+  ml_oof_csv: results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned/oof_predictions.csv
+  ml_summary_csv: results/radiomics/most_discriminant/gland/more_features_v2_rank_5x10/aggregated_performance/summary_metrics.csv
+  top_k_ml: 3
+  dl_manifest_json: results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_deep_suite_manifest.json
+  outdir: results/radiomics/final_model_benchmark_with_interpretability
+  classification_threshold: 0.5
+  permutation_repeats: 20
+  permutation_seed: 42
+  n_bootstrap: 5000
+  bootstrap_seed: 42
+  n_permutation_tests: 5000
+  top_features: 20
+  max_native_samples: 200
+  ig_steps: 64
+  reuse_existing_interpretability: true

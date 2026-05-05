@@ -31,7 +31,7 @@ results/**/explicability/
 results/**/SHAP/
 results/**/LIME/
 artifacts/radiomics/features_all_gland.csv
-
+results/
 # Large model and report files
 *.pth
 *.pt

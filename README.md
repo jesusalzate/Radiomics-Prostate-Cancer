@@ -96,6 +96,10 @@ Generated results are not versioned. The default report writes:
 - `figures/confusion_matrices_top_models.png`
 - ranking plots for AUROC, AUPRC, and Brier score
 
+The reduced comparison/report commands use patient-level bootstrap when
+`patient_id` is present in the prediction files, with fallback to `sample_id`
+only when patient identifiers are unavailable.
+
 Interpretability is a first-class workflow, but it is intentionally explicit:
 `prostate-radiomics interpret` generates SHAP/native ML importance, integrated
 gradients/native DL importance, permutation importance, and feature-overlap

@@ -127,7 +127,11 @@ def _read_named_prediction(argument: str, id_column: str):
         if not classifier_df.empty:
             df = classifier_df
     if "model_name" in df.columns:
-        normalized = df[[id_column, "true_label", "probability", "model_name"]].copy()
+        keep_columns = [id_column, "true_label", "probability", "model_name"]
+        for optional_column in ["patient_id", "study_id", "sample_id"]:
+            if optional_column in df.columns and optional_column not in keep_columns:
+                keep_columns.append(optional_column)
+        normalized = df[keep_columns].copy()
     else:
         normalized = normalize_prediction_frame(df, model_name=model_name, id_column=id_column)
     return model_name, normalized
@@ -148,6 +152,7 @@ def command_compare(args: argparse.Namespace) -> int:
         raise ValueError("compare requires at least two --prediction NAME=CSV inputs.")
 
     id_column = args.id_column or config.get("id_column", "sample_id")
+    group_column = args.group_column or config.get("group_column")
     threshold = args.threshold if args.threshold is not None else float(config.get("threshold", 0.5))
     n_bootstrap = args.n_bootstrap if args.n_bootstrap is not None else int(config.get("n_bootstrap", 1000))
     output_dir = resolve_project_path(args.outdir or config.get("outdir", "results/radiomics/clinical_comparison"))
@@ -155,9 +160,12 @@ def command_compare(args: argparse.Namespace) -> int:
     frames = dict(_read_named_prediction(argument, id_column=id_column) for argument in prediction_args)
     aligned = align_prediction_frames(frames, id_column=id_column)
     predictions_df = pd.concat(aligned.values(), ignore_index=True)
+    if group_column is None:
+        group_column = "patient_id" if "patient_id" in predictions_df.columns else id_column
     paths = build_clinical_report(
         predictions_df,
         output_dir,
+        group_column=group_column,
         threshold=threshold,
         n_bootstrap=n_bootstrap,
         report_level=args.report_level or config.get("report_level", "summary"),
@@ -175,12 +183,16 @@ def command_report(args: argparse.Namespace) -> int:
     config = config_arguments(load_yaml_config(args.config), section="report")
     predictions_path = resolve_project_path(args.predictions or config.get("predictions", "predictions_oof.csv"))
     output_dir = resolve_project_path(args.outdir or config.get("outdir", predictions_path.parent))
+    group_column = args.group_column or config.get("group_column")
     threshold = args.threshold if args.threshold is not None else float(config.get("threshold", 0.5))
     n_bootstrap = args.n_bootstrap if args.n_bootstrap is not None else int(config.get("n_bootstrap", 1000))
     predictions_df = pd.read_csv(predictions_path)
+    if group_column is None:
+        group_column = "patient_id" if "patient_id" in predictions_df.columns else "sample_id"
     paths = build_clinical_report(
         predictions_df,
         output_dir,
+        group_column=group_column,
         threshold=threshold,
         n_bootstrap=n_bootstrap,
         report_level=args.report_level or config.get("report_level", "summary"),
@@ -246,6 +258,7 @@ def build_parser() -> argparse.ArgumentParser:
     compare.add_argument("--prediction", action="append", default=[])
     compare.add_argument("--outdir", default=None)
     compare.add_argument("--id-column", default=None)
+    compare.add_argument("--group-column", default=None)
     compare.add_argument("--threshold", type=float, default=None)
     compare.add_argument("--n-bootstrap", type=int, default=None)
     compare.add_argument("--report-level", choices=["summary", "full"], default=None)
@@ -255,6 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--config", default=None)
     report.add_argument("--predictions", default=None)
     report.add_argument("--outdir", default=None)
+    report.add_argument("--group-column", default=None)
     report.add_argument("--threshold", type=float, default=None)
     report.add_argument("--n-bootstrap", type=int, default=None)
     report.add_argument("--report-level", choices=["summary", "full"], default=None)

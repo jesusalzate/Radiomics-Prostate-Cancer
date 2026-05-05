@@ -27,6 +27,9 @@ These are the default scientific figures because they cover discrimination,
 clinical threshold utility, calibration, ranking uncertainty, and error profile
 without creating hundreds of per-feature images.
 
+`metrics_summary.csv` also records the bootstrap unit used for confidence
+intervals: `patient_id` when available, otherwise `sample_id`.
+
 ## Detailed Outputs
 
 Per-feature ROC plots, per-feature violin plots, LIME images, SHAP scatter

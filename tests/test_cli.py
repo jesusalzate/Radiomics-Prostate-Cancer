@@ -32,10 +32,20 @@ def test_cli_compare_smoke(tmp_path):
     pred_a = tmp_path / "a.csv"
     pred_b = tmp_path / "b.csv"
     pd.DataFrame(
-        {"sample_id": ["1", "2", "3", "4"], "true_label": [0, 0, 1, 1], "probability": [0.1, 0.3, 0.8, 0.9]}
+        {
+            "sample_id": ["1", "2", "3", "4"],
+            "patient_id": ["p1", "p2", "p3", "p4"],
+            "true_label": [0, 0, 1, 1],
+            "probability": [0.1, 0.3, 0.8, 0.9],
+        }
     ).to_csv(pred_a, index=False)
     pd.DataFrame(
-        {"sample_id": ["1", "2", "3", "4"], "true_label": [0, 0, 1, 1], "probability": [0.2, 0.4, 0.7, 0.85]}
+        {
+            "sample_id": ["1", "2", "3", "4"],
+            "patient_id": ["p1", "p2", "p3", "p4"],
+            "true_label": [0, 0, 1, 1],
+            "probability": [0.2, 0.4, 0.7, 0.85],
+        }
     ).to_csv(pred_b, index=False)
     outdir = tmp_path / "report"
     assert main(
@@ -53,6 +63,8 @@ def test_cli_compare_smoke(tmp_path):
     ) == 0
     assert (outdir / "metrics_summary.csv").exists()
     assert (outdir / "report.md").exists()
+    metrics_df = pd.read_csv(outdir / "metrics_summary.csv")
+    assert set(metrics_df["bootstrap_unit"]) == {"patient_id"}
 
 
 def test_cli_add_clinical_smoke(tmp_path):

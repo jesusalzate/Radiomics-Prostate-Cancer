@@ -27,6 +27,7 @@ question.
 
 ## Confidence Intervals
 
-The reduced report uses case-level bootstrap confidence intervals by default.
-When patient-level repeated observations matter, the legacy benchmark scripts
-remain available until patient-level bootstrap is promoted into the new package.
+The reduced report now uses patient-level bootstrap confidence intervals when
+`patient_id` is available in the prediction files. If not, it falls back to
+`sample_id`. The resampling unit used is written to `metrics_summary.csv` and
+`report.md`.

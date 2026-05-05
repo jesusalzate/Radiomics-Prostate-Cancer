@@ -24,6 +24,7 @@ from prostate_radiomics.reporting.figures import (
 def summarize_predictions(
     predictions_df: pd.DataFrame,
     *,
+    group_column: str | None = None,
     threshold: float = 0.5,
     n_bootstrap: int = 1000,
     seed: int = 42,
@@ -34,10 +35,12 @@ def summarize_predictions(
     for model_name, model_df in predictions_df.groupby("model_name"):
         y_true = model_df["true_label"].to_numpy(dtype=int)
         y_prob = model_df["probability"].to_numpy(dtype=float)
+        effective_group_column = group_column if group_column in model_df.columns else None
         metrics = compute_clinical_metrics(y_true, y_prob, threshold=threshold)
         ci = bootstrap_metric_confidence_intervals(
             y_true,
             y_prob,
+            group_ids=model_df[effective_group_column].to_numpy(dtype=str) if effective_group_column else None,
             threshold=threshold,
             n_bootstrap=n_bootstrap,
             seed=seed,
@@ -47,6 +50,14 @@ def summarize_predictions(
             "model_name": model_name,
             "n_cases": int(len(model_df)),
             "n_positive": int(model_df["true_label"].sum()),
+            "bootstrap_unit": effective_group_column or "sample_id",
+            "n_unique_bootstrap_units": (
+                int(model_df[effective_group_column].astype(str).nunique())
+                if effective_group_column
+                else int(model_df["sample_id"].astype(str).nunique())
+                if "sample_id" in model_df.columns
+                else int(len(model_df))
+            ),
             **metrics,
         }
         for metric_name, payload in ci.items():
@@ -64,6 +75,7 @@ def build_clinical_report(
     predictions_df: pd.DataFrame,
     output_dir: str | Path,
     *,
+    group_column: str | None = None,
     threshold: float = 0.5,
     n_bootstrap: int = 1000,
     seed: int = 42,
@@ -78,6 +90,7 @@ def build_clinical_report(
 
     metrics_df = summarize_predictions(
         predictions_df,
+        group_column=group_column,
         threshold=threshold,
         n_bootstrap=n_bootstrap,
         seed=seed,
@@ -115,6 +128,7 @@ def build_clinical_report(
         "",
         f"Threshold: `{threshold}`",
         f"Bootstrap iterations: `{n_bootstrap}`",
+        f"Bootstrap unit: `{group_column or 'sample_id'}`",
         f"Report level: `{report_level}`",
         "",
         "## Primary Metrics",

@@ -78,7 +78,8 @@ prostate-radiomics compare \
 The comparison aligns shared sample IDs, verifies labels match, computes primary
 clinical metrics, and writes one compact report with ROC, PR, calibration,
 decision-curve, probability-distribution, metric-heatmap, confusion-matrix, and
-bootstrap ranking figures.
+bootstrap ranking figures. Confidence intervals are bootstrapped at the patient
+level when `patient_id` is present in the prediction files.
 
 ## 7. Interpretability
 

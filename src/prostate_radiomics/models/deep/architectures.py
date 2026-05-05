@@ -14,6 +14,7 @@ from prostate_radiomics.models.deep.losses import focal_loss, margin_loss
 
 
 PURE_CAPSNET_ARCHITECTURES = {"capsnet"}
+DUAL_INPUT_ARCHITECTURES = {"dual_transformer", "dual_capsnet", "dual_transformer_capsnet"}
 
 
 def _cosine_restart_optimizer(config: DeepTabularConfig) -> Adam:

@@ -71,6 +71,11 @@ def parse_args() -> argparse.Namespace:
         choices=["youden_val", "fixed_0.5"],
         default="youden_val",
     )
+    parser.add_argument(
+        "--probability_calibration",
+        choices=["none", "sigmoid", "isotonic"],
+        default="none",
+    )
     return parser.parse_args()
 
 
@@ -132,6 +137,8 @@ def main() -> None:
             args.transformer_loss,
             "--threshold_strategy",
             args.threshold_strategy,
+            "--probability_calibration",
+            args.probability_calibration,
         ]
         if args.predefined_folds_json:
             command.extend(

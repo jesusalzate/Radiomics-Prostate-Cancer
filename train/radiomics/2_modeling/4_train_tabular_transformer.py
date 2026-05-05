@@ -30,10 +30,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import tensorflow as tf
+from sklearn.calibration import calibration_curve
 from sklearn.impute import SimpleImputer
+from sklearn.isotonic import IsotonicRegression
+from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     accuracy_score,
     balanced_accuracy_score,
+    brier_score_loss,
     classification_report,
     confusion_matrix,
     f1_score,
@@ -138,6 +142,15 @@ def parse_args() -> argparse.Namespace:
             "How to convert probabilities into binary predictions. "
             "'youden_val' chooses the threshold on the inner validation split. "
             "'fixed_0.5' uses a shared fixed threshold for fairer ML-vs-DL comparisons."
+        ),
+    )
+    parser.add_argument(
+        "--probability_calibration",
+        choices=["none", "sigmoid", "isotonic"],
+        default="none",
+        help=(
+            "Optional post-hoc probability calibration fitted on the inner validation split "
+            "and applied to the outer test fold."
         ),
     )
     parser.add_argument("--predefined_folds_json", default=None)
@@ -304,6 +317,62 @@ def split_feature_modalities(selected_features: list[str]) -> tuple[list[str], l
     return clinical_features, radiomics_features
 
 
+def _prob_to_logit(probabilities: np.ndarray) -> np.ndarray:
+    clipped = np.clip(np.asarray(probabilities, dtype=float), 1e-6, 1.0 - 1e-6)
+    return np.log(clipped / (1.0 - clipped))
+
+
+def fit_probability_calibrator(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    method: str,
+):
+    if method == "none":
+        return None
+    if len(np.unique(y_true)) < 2:
+        return None
+    y_true = np.asarray(y_true).astype(int)
+    y_prob = np.asarray(y_prob, dtype=float)
+    if method == "sigmoid":
+        calibrator = LogisticRegression(solver="lbfgs", max_iter=1000)
+        calibrator.fit(_prob_to_logit(y_prob).reshape(-1, 1), y_true)
+        return calibrator
+    if method == "isotonic":
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.fit(np.clip(y_prob, 1e-6, 1.0 - 1e-6), y_true)
+        return calibrator
+    raise ValueError(f"Unsupported probability calibration method: {method}")
+
+
+def apply_probability_calibrator(calibrator, y_prob: np.ndarray, method: str) -> np.ndarray:
+    y_prob = np.asarray(y_prob, dtype=float)
+    if calibrator is None or method == "none":
+        return y_prob
+    if method == "sigmoid":
+        return calibrator.predict_proba(_prob_to_logit(y_prob).reshape(-1, 1))[:, 1]
+    if method == "isotonic":
+        return calibrator.predict(np.clip(y_prob, 1e-6, 1.0 - 1e-6))
+    raise ValueError(f"Unsupported probability calibration method: {method}")
+
+
+def calibration_error(y_true: np.ndarray, y_prob: np.ndarray, n_bins: int = 10) -> float:
+    y_true = np.asarray(y_true, dtype=float)
+    y_prob = np.asarray(y_prob, dtype=float)
+    bins = np.linspace(0.0, 1.0, n_bins + 1)
+    bin_ids = np.digitize(y_prob, bins, right=True) - 1
+    bin_ids = np.clip(bin_ids, 0, n_bins - 1)
+    ece = 0.0
+    total = len(y_true)
+    for bin_index in range(n_bins):
+        mask = bin_ids == bin_index
+        if not mask.any():
+            continue
+        prob_avg = y_prob[mask].mean()
+        acc_avg = y_true[mask].mean()
+        ece += abs(prob_avg - acc_avg) * mask.sum() / total
+    return float(ece)
+
+
 def compute_binary_metrics(y_true: np.ndarray, y_prob: np.ndarray, threshold: float) -> dict:
     y_pred = (y_prob >= threshold).astype(int)
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
@@ -380,6 +449,32 @@ def plot_roc(y_true: np.ndarray, y_prob: np.ndarray, output_path: Path) -> None:
     ax.set_title("Radiomics Transformer ROC")
     ax.grid(True, alpha=0.3)
     ax.legend(loc="lower right")
+    fig.tight_layout()
+    fig.savefig(output_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_calibration_pre_post(
+    *,
+    y_true: np.ndarray,
+    y_prob_pre: np.ndarray,
+    y_prob_post: np.ndarray,
+    output_path: Path,
+    title: str,
+) -> None:
+    fig, ax = plt.subplots(figsize=(6, 5))
+    for label, probabilities, color in [
+        ("Pre", y_prob_pre, "#555555"),
+        ("Post", y_prob_post, "#0072B2"),
+    ]:
+        prob_true, prob_pred = calibration_curve(y_true, probabilities, n_bins=8, strategy="quantile")
+        ax.plot(prob_pred, prob_true, marker="o", linewidth=1.7, label=label, color=color)
+    ax.plot([0, 1], [0, 1], linestyle="--", color="black", alpha=0.5)
+    ax.set_xlabel("Mean predicted probability")
+    ax.set_ylabel("Observed fraction")
+    ax.set_title(title)
+    ax.legend(frameon=False)
+    ax.grid(True, alpha=0.2)
     fig.tight_layout()
     fig.savefig(output_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -615,22 +710,43 @@ def train_and_evaluate_single_split(
         verbose=2,
     )
 
-    val_prob = predict_positive_probability(model, args.architecture, X_val)
+    val_prob_raw = predict_positive_probability(model, args.architecture, X_val)
+    test_prob_raw = predict_positive_probability(model, args.architecture, X_test)
+    calibrator = fit_probability_calibrator(y_val, val_prob_raw, args.probability_calibration)
+    if args.probability_calibration != "none" and calibrator is None:
+        log_progress(
+            f"{fold_label} | probability calibration requested ({args.probability_calibration}) "
+            "but validation split could not support calibration; using raw probabilities."
+        )
+    val_prob = apply_probability_calibrator(calibrator, val_prob_raw, args.probability_calibration)
+    test_prob = apply_probability_calibrator(calibrator, test_prob_raw, args.probability_calibration)
     val_youden_threshold = choose_threshold(y_val, val_prob)
     if args.threshold_strategy == "fixed_0.5":
         threshold = 0.5
     else:
         threshold = val_youden_threshold
-    test_prob = predict_positive_probability(model, args.architecture, X_test)
     test_metrics = compute_binary_metrics(y_test, test_prob, threshold)
     test_metrics_val_youden = compute_binary_metrics(y_test, test_prob, val_youden_threshold)
     test_pred = (test_prob >= threshold).astype(int)
+    calibration_summary = {
+        "method": args.probability_calibration,
+        "ece_pre": calibration_error(y_val, val_prob_raw),
+        "ece_post": calibration_error(y_val, val_prob),
+        "brier_pre": float(brier_score_loss(y_val, val_prob_raw)),
+        "brier_post": float(brier_score_loss(y_val, val_prob)),
+        "validation_auc_pre": float(roc_auc_score(y_val, val_prob_raw)),
+        "validation_auc_post": float(roc_auc_score(y_val, val_prob)),
+    }
     probability_summary = {
-        **summarize_probabilities(val_prob, "val"),
-        **summarize_probabilities(test_prob, "test"),
+        **summarize_probabilities(val_prob_raw, "val_raw"),
+        **summarize_probabilities(val_prob, "val_calibrated"),
+        **summarize_probabilities(test_prob_raw, "test_raw"),
+        **summarize_probabilities(test_prob, "test_calibrated"),
         "selected_threshold": float(threshold),
         "validation_youden_threshold": float(val_youden_threshold),
         "threshold_strategy": args.threshold_strategy,
+        "probability_calibration": args.probability_calibration,
+        "calibration_summary": calibration_summary,
         "test_metrics_at_validation_youden": test_metrics_val_youden,
     }
 
@@ -642,6 +758,7 @@ def train_and_evaluate_single_split(
     predictions["fold_label"] = fold_label
     predictions["selected_feature_count"] = input_feature_count
     predictions["threshold"] = threshold
+    predictions["probability_csPCa_raw"] = test_prob_raw
     predictions["probability_csPCa"] = test_prob
     predictions["prediction"] = test_pred
     predictions.to_csv(output_dir / "test_predictions.csv", index=False)
@@ -655,13 +772,20 @@ def train_and_evaluate_single_split(
     )
     log_progress(
         f"{fold_label} | probability diagnostics | "
-        f"val_median={probability_summary['val_prob_median']:.4f} | "
-        f"val_p95={probability_summary['val_prob_p95']:.4f} | "
-        f"test_median={probability_summary['test_prob_median']:.4f} | "
-        f"test_p95={probability_summary['test_prob_p95']:.4f} | "
-        f"test_positive_rate_at_0.5={probability_summary['test_positive_rate_at_0_5']:.4f} | "
+        f"val_cal_median={probability_summary['val_calibrated_prob_median']:.4f} | "
+        f"val_cal_p95={probability_summary['val_calibrated_prob_p95']:.4f} | "
+        f"test_cal_median={probability_summary['test_calibrated_prob_median']:.4f} | "
+        f"test_cal_p95={probability_summary['test_calibrated_prob_p95']:.4f} | "
+        f"test_positive_rate_at_0.5={probability_summary['test_calibrated_positive_rate_at_0_5']:.4f} | "
         f"validation_youden_threshold={val_youden_threshold:.4f} | "
         f"test_f1_at_validation_youden={test_metrics_val_youden['f1']:.4f}"
+    )
+    log_progress(
+        f"{fold_label} | calibration | method={args.probability_calibration} | "
+        f"val_ece_pre={calibration_summary['ece_pre']:.4f} | "
+        f"val_ece_post={calibration_summary['ece_post']:.4f} | "
+        f"val_brier_pre={calibration_summary['brier_pre']:.4f} | "
+        f"val_brier_post={calibration_summary['brier_post']:.4f}"
     )
 
     pd.DataFrame([test_metrics]).to_csv(output_dir / "test_metrics.csv", index=False)
@@ -676,6 +800,14 @@ def train_and_evaluate_single_split(
     pd.DataFrame(history.history).to_csv(output_dir / "training_history.csv", index=False)
     plot_training_history(history, output_dir / "training_curves.png")
     plot_roc(y_test, test_prob, output_dir / "roc_test.png")
+    if args.probability_calibration != "none":
+        plot_calibration_pre_post(
+            y_true=y_val,
+            y_prob_pre=val_prob_raw,
+            y_prob_post=val_prob,
+            output_path=output_dir / "calibration_validation_pre_post.png",
+            title=f"{fold_label} validation calibration",
+        )
 
     model.save(output_dir / f"radiomics_{args.architecture}.keras")
     run_config = {

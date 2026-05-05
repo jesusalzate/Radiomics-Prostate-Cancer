@@ -64,7 +64,9 @@ prostate-radiomics train-deep \
 ```
 
 Deep models should reuse the shared fold feature plan exported by the classical
-pipeline so ML and DL comparisons are aligned.
+pipeline so ML and DL comparisons are aligned. In the current configs, deep
+probabilities are calibrated post hoc on the inner validation split of each
+outer fold before the OOF file is written.
 
 For clinical-plus-radiomics dual-branch models, use:
 

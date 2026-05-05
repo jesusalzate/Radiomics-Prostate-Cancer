@@ -49,6 +49,13 @@ interpretability. It writes:
 - `interpretability/permutation/permutation_importance_heatmap.png`
 - `interpretability/permutation/permutation_top_feature_overlap.png`
 
+Deep training folds also persist calibration diagnostics when probability
+calibration is enabled:
+
+- `calibration_validation_pre_post.png`
+- `threshold_diagnostics.json` with pre/post ECE and Brier summaries
+- `cv_oof_predictions.csv` with both `probability_csPCa_raw` and calibrated `probability_csPCa`
+
 ## Git Policy
 
 The following are ignored:

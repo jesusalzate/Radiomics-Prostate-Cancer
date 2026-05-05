@@ -48,7 +48,9 @@ prostate-radiomics train-deep \
 ```
 
 The deep suite uses the PI-CAI folds and the shared feature plan from the
-feature-prep run so fold membership and selected features stay aligned.
+feature-prep run so fold membership and selected features stay aligned. The
+current deep configs also apply post-hoc sigmoid calibration on the inner
+validation split of each outer fold before writing OOF probabilities.
 
 If `shared_fold_feature_plan.json` is missing, run the feature-prep classical
 config first:

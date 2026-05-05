@@ -76,3 +76,4 @@ train_deep:
   epochs: 300
   patience: 50
   threshold_strategy: youden_val
+  probability_calibration: sigmoid

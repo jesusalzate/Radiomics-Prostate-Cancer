@@ -68,13 +68,22 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--threshold_strategy",
-        choices=["youden_val", "fixed_0.5"],
+        choices=["youden_val", "validation_youden", "fixed_0.5"],
         default="youden_val",
     )
     parser.add_argument(
         "--probability_calibration",
         choices=["none", "sigmoid", "isotonic"],
         default="none",
+    )
+    parser.add_argument(
+        "--fold_validation_mode",
+        choices=["inner_val", "outer_val"],
+        default="inner_val",
+    )
+    parser.add_argument(
+        "--final_refit_on_outer_train",
+        action="store_true",
     )
     return parser.parse_args()
 
@@ -139,7 +148,11 @@ def main() -> None:
             args.threshold_strategy,
             "--probability_calibration",
             args.probability_calibration,
+            "--fold_validation_mode",
+            args.fold_validation_mode,
         ]
+        if args.final_refit_on_outer_train:
+            command.append("--final_refit_on_outer_train")
         if args.predefined_folds_json:
             command.extend(
                 [

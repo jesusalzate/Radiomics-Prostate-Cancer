@@ -13,7 +13,7 @@ from prostate_radiomics.models.deep.layers import AttentionPooling1D, DigitCapsu
 from prostate_radiomics.models.deep.losses import focal_loss, margin_loss
 
 
-PURE_CAPSNET_ARCHITECTURES = {"capsnet"}
+PURE_CAPSNET_ARCHITECTURES = {"capsnet", "transformer_capsnet"}
 DUAL_INPUT_ARCHITECTURES = {"dual_transformer", "dual_capsnet", "dual_transformer_capsnet"}
 
 
@@ -209,7 +209,13 @@ def _compile_binary_capsule_probability_model(model: Model, config: DeepTabularC
 
 
 def build_transformer_capsnet_model(input_dim: int, config: DeepTabularConfig) -> Model:
-    """Build a hybrid Transformer-CapsNet using the notebook-equivalent transformer stem."""
+    """Build the notebook-equivalent hybrid Transformer-CapsNet.
+
+    The original notebook keeps the CapsNet-style two-capsule output and trains
+    it with margin loss. This differs from a scalar sigmoid/focal-loss model and
+    is intentionally preserved here so fold-level metrics match the notebook
+    experiment as closely as possible.
+    """
 
     inputs = layers.Input(shape=(input_dim,), name="input_features")
     x = layers.Dense(16, activation="gelu")(inputs)
@@ -221,45 +227,40 @@ def build_transformer_capsnet_model(input_dim: int, config: DeepTabularConfig) -
     x = layers.BatchNormalization()(x)
     x = layers.Dropout(config.dense_dropout)(x)
     x = layers.Dense(
-        config.num_tokens * config.dim_capsules,
+        config.num_tokens * config.projection_dim,
         activation="gelu",
         kernel_regularizer=tf.keras.regularizers.l2(config.l2_reg),
     )(x)
     x = layers.BatchNormalization()(x)
     x = layers.Dropout(config.dense_dropout)(x)
-    x = layers.Reshape((config.num_tokens, config.dim_capsules))(x)
-    x = PositionalEmbedding(config.num_tokens, config.dim_capsules)(x)
+    x = layers.Reshape((config.num_tokens, config.projection_dim), name="tokens")(x)
+    x = PositionalEmbedding(config.num_tokens, config.projection_dim)(x)
     for _ in range(config.num_transformer_layers):
         x = transformer_block(
             x,
-            projection_dim=config.dim_capsules,
+            projection_dim=config.projection_dim,
             num_heads=config.num_heads,
             dropout_rate=config.transformer_dropout,
         )
     transformer_out = layers.LayerNormalization(epsilon=1e-6)(x)
-    squashed_tokens = layers.Lambda(
-        lambda tensor: squash(tensor),
-        output_shape=(config.num_tokens, config.dim_capsules),
-        name="hybrid_token_squash",
-    )(transformer_out)
+    squashed_tokens = layers.Lambda(squash, name="squash_primary")(transformer_out)
     digit_caps = DigitCapsuleLayer(
-        num_capsules=config.num_capsules,
+        num_capsules=config.num_classes,
         dim_capsules=config.dim_capsules,
         routing_iter=config.routing_iterations,
+        name="digit_caps",
     )(squashed_tokens)
-    capsule_norms = layers.Lambda(
-        lambda tensor: tf.sqrt(tf.reduce_sum(tf.square(tensor), axis=-1) + tf.keras.backend.epsilon()),
-        output_shape=(config.num_capsules,),
-        name="hybrid_capsule_norms",
-    )(digit_caps)
-    probabilities = layers.Softmax(name="hybrid_capsule_softmax")(capsule_norms)
-    outputs = layers.Lambda(
-        lambda tensor: tensor[:, 1:2],
-        output_shape=(1,),
-        name="csPCa_probability",
-    )(probabilities)
-    model = Model(inputs=inputs, outputs=outputs, name="radiomics_transformer_capsnet")
-    return _compile_binary_capsule_probability_model(model, config)
+    outputs = Length(name="capsule_length")(digit_caps)
+    model = Model(inputs=inputs, outputs=outputs, name="TransCapsNet")
+    model.compile(
+        optimizer=_cosine_restart_optimizer(config),
+        loss=margin_loss,
+        metrics=[
+            tf.keras.metrics.CategoricalAccuracy(name="accuracy"),
+            tf.keras.metrics.AUC(name="auc"),
+        ],
+    )
+    return model
 
 
 def build_dual_transformer_model(

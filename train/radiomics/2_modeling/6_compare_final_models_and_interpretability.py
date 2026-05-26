@@ -8,6 +8,7 @@ import ast
 import importlib.util
 import json
 import sys
+import warnings
 from pathlib import Path
 
 import matplotlib as mpl
@@ -36,7 +37,7 @@ from sklearn.metrics import (
     roc_auc_score,
     roc_curve,
 )
-from scipy.stats import wilcoxon
+from scipy.stats import t, wilcoxon
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 if str(PROJECT_ROOT) not in sys.path:
@@ -147,7 +148,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ml_predictions_csv", required=True)
     parser.add_argument("--ml_oof_csv", required=True)
     parser.add_argument("--ml_summary_csv", default=None)
-    parser.add_argument("--ml_classifier", action="append", default=[])
+    parser.add_argument("--ml_classifier", action="append", nargs="+", default=[])
     parser.add_argument("--top_k_ml", type=int, default=3)
     parser.add_argument("--dl_manifest_json", required=True)
     parser.add_argument("--outdir", required=True)
@@ -166,11 +167,76 @@ def parse_args() -> argparse.Namespace:
         help="Only run the ML-vs-DL benchmark and comparison plots; skip SHAP, IG, and permutation importance.",
     )
     parser.add_argument(
+        "--skip_case_level_stats",
+        action="store_true",
+        help="Skip pooled case-level bootstrap/permutation pairwise tests; keep fold-wise metrics and publication plots.",
+    )
+    parser.add_argument(
         "--reuse_existing_interpretability",
         action="store_true",
         help="Skip a model if its per-model interpretability outputs already exist on disk.",
     )
     return parser.parse_args()
+
+
+
+def plot_beeswarm_attributions(
+    attributions: np.ndarray,
+    feature_values: np.ndarray,
+    feature_names: list[str],
+    output_path: Path,
+    *,
+    title: str,
+    max_display: int = 20,
+) -> None:
+    """Save a SHAP-style beeswarm plot for per-sample feature attributions."""
+
+    if attributions is None or feature_values is None:
+        return
+    values = np.asarray(attributions, dtype=float)
+    features = np.asarray(feature_values, dtype=float)
+    if values.ndim != 2 or features.ndim != 2 or values.shape != features.shape:
+        return
+    if values.shape[1] != len(feature_names):
+        feature_names = feature_names[: values.shape[1]]
+    if not feature_names:
+        return
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.figure(figsize=(9, 6))
+    if shap is not None:
+        shap.summary_plot(
+            values,
+            features=features,
+            feature_names=feature_names,
+            show=False,
+            max_display=max_display,
+            plot_size=None,
+        )
+        plt.title(title)
+        plt.tight_layout()
+        plt.savefig(output_path, dpi=300, bbox_inches="tight")
+        plt.close()
+        return
+
+    importance = np.mean(np.abs(values), axis=0)
+    top_indices = np.argsort(importance)[-max_display:]
+    rng = np.random.default_rng(42)
+    ax = plt.gca()
+    for rank, feature_index in enumerate(top_indices):
+        x_values = values[:, feature_index]
+        y_values = np.full_like(x_values, rank, dtype=float) + rng.normal(0, 0.06, size=len(x_values))
+        color_values = features[:, feature_index]
+        scatter = ax.scatter(x_values, y_values, c=color_values, cmap="coolwarm", s=10, alpha=0.75, linewidths=0)
+    ax.axvline(0.0, color="black", linewidth=0.8)
+    ax.set_yticks(range(len(top_indices)))
+    ax.set_yticklabels([feature_names[index] for index in top_indices])
+    ax.set_xlabel("Attribution value")
+    ax.set_title(title)
+    plt.colorbar(scatter, ax=ax, label="Feature value")
+    plt.tight_layout()
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close()
 
 
 def parse_serialized_list(value):
@@ -419,19 +485,123 @@ def summarize_fold_metrics(fold_metrics_df: pd.DataFrame) -> pd.DataFrame:
         "ppv",
         "npv",
         "log_loss",
+        "brier_score",
     ]
     rows = []
     for model_name, model_df in fold_metrics_df.groupby("model_name"):
-        row = {"model_name": model_name, "model_family": model_df["model_family"].iloc[0]}
+        row = {
+            "model_name": model_name,
+            "model_family": model_df["model_family"].iloc[0],
+            "n_folds": int(model_df["fold_index"].nunique()),
+        }
         for metric_name in metric_columns:
-            row[f"{metric_name}_mean"] = float(model_df[metric_name].mean())
-            row[f"{metric_name}_median"] = float(model_df[metric_name].median())
-            row[f"{metric_name}_std"] = float(model_df[metric_name].std(ddof=1)) if len(model_df) > 1 else 0.0
+            values = model_df[metric_name].dropna().astype(float)
+            n_values = len(values)
+            mean_value = float(values.mean()) if n_values else np.nan
+            std_value = float(values.std(ddof=1)) if n_values > 1 else 0.0
+            sem_value = std_value / np.sqrt(n_values) if n_values > 1 else 0.0
+            half_width = float(t.ppf(0.975, n_values - 1) * sem_value) if n_values > 1 else 0.0
+            row[f"{metric_name}_mean"] = mean_value
+            row[f"{metric_name}_median"] = float(values.median()) if n_values else np.nan
+            row[f"{metric_name}_std"] = std_value
+            row[f"{metric_name}_ci_low"] = mean_value - half_width if n_values else np.nan
+            row[f"{metric_name}_ci_high"] = mean_value + half_width if n_values else np.nan
         rows.append(row)
     return pd.DataFrame(rows).sort_values(
         by=["picai_score_mean", "auroc_mean", "ap_mean"],
         ascending=False,
     )
+
+
+def plot_mean_roc_comparison(pooled_predictions_df: pd.DataFrame, output_path: Path) -> Path:
+    mean_fpr = np.linspace(0.0, 1.0, 100)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    ax.plot([0, 1], [0, 1], linestyle="--", color="black", alpha=0.45, label="Chance")
+
+    for model_name, model_df in pooled_predictions_df.groupby("model_name"):
+        tprs = []
+        aucs = []
+        for _, fold_df in model_df.groupby("fold_index"):
+            y_true = fold_df["true_label"].to_numpy(dtype=int)
+            y_prob = fold_df["probability"].to_numpy(dtype=float)
+            if len(np.unique(y_true)) < 2:
+                continue
+            fpr, tpr_values, _ = roc_curve(y_true, y_prob)
+            interp_tpr = np.interp(mean_fpr, fpr, tpr_values)
+            interp_tpr[0] = 0.0
+            interp_tpr[-1] = 1.0
+            tprs.append(interp_tpr)
+            aucs.append(roc_auc_score(y_true, y_prob))
+        if not tprs:
+            continue
+        mean_tpr = np.mean(tprs, axis=0)
+        std_tpr = np.std(tprs, axis=0, ddof=1) if len(tprs) > 1 else np.zeros_like(mean_tpr)
+        mean_auc = float(np.mean(aucs))
+        std_auc = float(np.std(aucs, ddof=1)) if len(aucs) > 1 else 0.0
+        line = ax.plot(mean_fpr, mean_tpr, lw=2, label=f"{model_name} (AUC {mean_auc:.3f} +/- {std_auc:.3f})")[0]
+        ax.fill_between(
+            mean_fpr,
+            np.maximum(mean_tpr - 1.96 * std_tpr, 0),
+            np.minimum(mean_tpr + 1.96 * std_tpr, 1),
+            color=line.get_color(),
+            alpha=0.08,
+            linewidth=0,
+        )
+
+    ax.set_xlabel("False Positive Rate")
+    ax.set_ylabel("True Positive Rate")
+    ax.set_title("Mean ROC curves across five folds")
+    ax.legend(loc="lower right", fontsize=8)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
+
+
+def plot_mean_pr_comparison(pooled_predictions_df: pd.DataFrame, output_path: Path) -> Path:
+    mean_recall = np.linspace(0.0, 1.0, 100)
+    fig, ax = plt.subplots(figsize=(8, 6))
+
+    for model_name, model_df in pooled_predictions_df.groupby("model_name"):
+        precisions = []
+        aps = []
+        for _, fold_df in model_df.groupby("fold_index"):
+            y_true = fold_df["true_label"].to_numpy(dtype=int)
+            y_prob = fold_df["probability"].to_numpy(dtype=float)
+            if len(np.unique(y_true)) < 2:
+                continue
+            precision, recall, _ = precision_recall_curve(y_true, y_prob)
+            interp_precision = np.interp(mean_recall, np.flip(recall), np.flip(precision))
+            precisions.append(interp_precision)
+            aps.append(average_precision_score(y_true, y_prob))
+        if not precisions:
+            continue
+        mean_precision = np.mean(precisions, axis=0)
+        std_precision = np.std(precisions, axis=0, ddof=1) if len(precisions) > 1 else np.zeros_like(mean_precision)
+        mean_ap = float(np.mean(aps))
+        std_ap = float(np.std(aps, ddof=1)) if len(aps) > 1 else 0.0
+        line = ax.plot(mean_recall, mean_precision, lw=2, label=f"{model_name} (AP {mean_ap:.3f} +/- {std_ap:.3f})")[0]
+        ax.fill_between(
+            mean_recall,
+            np.maximum(mean_precision - 1.96 * std_precision, 0),
+            np.minimum(mean_precision + 1.96 * std_precision, 1),
+            color=line.get_color(),
+            alpha=0.08,
+            linewidth=0,
+        )
+
+    baseline = float(pooled_predictions_df["true_label"].mean())
+    ax.axhline(baseline, linestyle="--", color="black", alpha=0.45, label=f"Prevalence ({baseline:.3f})")
+    ax.set_xlabel("Recall")
+    ax.set_ylabel("Precision")
+    ax.set_title("Mean precision-recall curves across five folds")
+    ax.legend(loc="lower left", fontsize=8)
+    fig.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    return output_path
 
 
 def compare_models_foldwise(fold_metrics_df: pd.DataFrame) -> pd.DataFrame:
@@ -464,7 +634,9 @@ def compare_models_foldwise(fold_metrics_df: pd.DataFrame) -> pd.DataFrame:
                 values_b = df_b.loc[shared_folds, metric_name].to_numpy(dtype=float)
                 differences = values_a - values_b
                 try:
-                    statistic, p_value = wilcoxon(values_a, values_b, alternative="two-sided")
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        statistic, p_value = wilcoxon(values_a, values_b, alternative="two-sided")
                 except ValueError:
                     statistic, p_value = np.nan, np.nan
                 rows.append(
@@ -687,10 +859,13 @@ def plot_metric_ranking_with_bootstrap(
     plot_df["ci_low"] = np.nan
     plot_df["ci_high"] = np.nan
 
+    has_pairwise_ci = not pairwise_case_df.empty and {"metric", "model_a", "model_b"}.issubset(pairwise_case_df.columns)
     for row_index, row in plot_df.iterrows():
         model_name = row["model_name"]
         if model_name == reference_model:
             plot_df.loc[row_index, ["ci_low", "ci_high"]] = row[metric_name]
+            continue
+        if not has_pairwise_ci:
             continue
         pair_row = pairwise_case_df[
             (pairwise_case_df["metric"] == metric_name)
@@ -730,6 +905,8 @@ def plot_metric_ranking_with_bootstrap(
 
 
 def plot_pairwise_difference_heatmap(pairwise_case_df: pd.DataFrame, *, metric_name: str, output_path: Path) -> None:
+    if pairwise_case_df.empty or "metric" not in pairwise_case_df.columns:
+        return
     metric_df = pairwise_case_df[pairwise_case_df["metric"] == metric_name].copy()
     if metric_df.empty:
         return
@@ -989,6 +1166,51 @@ def reduce_feature_name_list(feature_names: list[str], support_mask: np.ndarray 
     return [feature_name for feature_name, keep_flag in zip(feature_names, support_mask) if keep_flag]
 
 
+def save_signed_attributions_long(
+    *,
+    attributions: np.ndarray,
+    feature_values: np.ndarray,
+    feature_names: list[str],
+    output_path: Path,
+    sample_ids: np.ndarray | list[str] | None,
+    metadata: dict[str, object] | None = None,
+) -> None:
+    """Persist per-sample signed attributions for downstream beeswarm/map analysis."""
+
+    values = np.asarray(attributions, dtype=float)
+    features = np.asarray(feature_values, dtype=float)
+    if values.ndim != 2 or features.ndim != 2 or values.shape != features.shape:
+        return
+    usable_features = list(feature_names[: values.shape[1]])
+    if not usable_features:
+        return
+    if sample_ids is None:
+        sample_id_array = np.arange(values.shape[0]).astype(str)
+    else:
+        sample_id_array = np.asarray(sample_ids).astype(str)
+        if sample_id_array.shape[0] != values.shape[0]:
+            sample_id_array = np.arange(values.shape[0]).astype(str)
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    records = []
+    base_metadata = metadata or {}
+    for feature_index, feature_name in enumerate(usable_features):
+        frame = pd.DataFrame(
+            {
+                "sample_id": sample_id_array,
+                "sample_position": np.arange(values.shape[0], dtype=int),
+                "feature": feature_name,
+                "feature_value": features[:, feature_index],
+                "attribution": values[:, feature_index],
+                "abs_attribution": np.abs(values[:, feature_index]),
+            }
+        )
+        for key, value in base_metadata.items():
+            frame[key] = value
+        records.append(frame)
+    pd.concat(records, ignore_index=True).to_csv(output_path, index=False)
+
+
 def extract_native_ml_importance(
     *,
     fitted_model,
@@ -996,6 +1218,11 @@ def extract_native_ml_importance(
     X_train: pd.DataFrame,
     X_eval: pd.DataFrame,
     max_native_samples: int,
+    beeswarm_path: Path | None = None,
+    beeswarm_title: str | None = None,
+    signed_attribution_path: Path | None = None,
+    sample_ids: np.ndarray | list[str] | None = None,
+    signed_metadata: dict[str, object] | None = None,
 ) -> pd.DataFrame:
     if shap is None:
         return pd.DataFrame(columns=["feature", "importance", "method"])
@@ -1009,10 +1236,13 @@ def extract_native_ml_importance(
     if "variancethreshold" in fitted_model.named_steps:
         support_mask = fitted_model.named_steps["variancethreshold"].get_support()
     transformed_feature_names = reduce_feature_name_list(selected_features, support_mask)
+    sample_id_array = np.asarray(sample_ids).astype(str) if sample_ids is not None else None
 
     if X_eval_transformed.shape[0] > max_native_samples:
         sample_indices = np.linspace(0, X_eval_transformed.shape[0] - 1, num=max_native_samples, dtype=int)
         X_eval_transformed = X_eval_transformed[sample_indices]
+        if sample_id_array is not None:
+            sample_id_array = sample_id_array[sample_indices]
 
     try:
         if estimator.__class__.__name__.lower().startswith("lgbm") or hasattr(estimator, "feature_importances_"):
@@ -1038,6 +1268,26 @@ def extract_native_ml_importance(
     if shap_values.ndim == 3:
         shap_values = shap_values[:, :, 1] if shap_values.shape[-1] > 1 else shap_values[:, :, 0]
 
+    if beeswarm_path is not None:
+        plot_beeswarm_attributions(
+            shap_values,
+            X_eval_transformed,
+            transformed_feature_names,
+            beeswarm_path,
+            title=beeswarm_title or "SHAP beeswarm",
+        )
+    if signed_attribution_path is not None:
+        metadata = {"method": "shap"}
+        metadata.update(signed_metadata or {})
+        save_signed_attributions_long(
+            attributions=shap_values,
+            feature_values=X_eval_transformed,
+            feature_names=transformed_feature_names,
+            output_path=signed_attribution_path,
+            sample_ids=sample_id_array,
+            metadata=metadata,
+        )
+
     mean_abs_shap = np.mean(np.abs(shap_values), axis=0)
     return pd.DataFrame(
         {
@@ -1048,31 +1298,67 @@ def extract_native_ml_importance(
     ).sort_values("importance", ascending=False)
 
 
+def positive_output_tensor(outputs):
+    outputs = tf.convert_to_tensor(outputs)
+    if outputs.shape.rank is not None and outputs.shape.rank >= 2 and outputs.shape[-1] is not None and outputs.shape[-1] > 1:
+        return outputs[:, 1]
+    if outputs.shape.rank is None:
+        outputs = tf.reshape(outputs, (tf.shape(outputs)[0], -1))
+        return outputs[:, -1]
+    return tf.reshape(outputs, (-1,))
+
+
 def integrated_gradients(
     *,
     model,
-    inputs: np.ndarray,
-    baseline: np.ndarray,
+    inputs,
+    baseline,
     steps: int,
-) -> np.ndarray:
+):
     if tf is None:
         raise RuntimeError("TensorFlow is required for integrated gradients.")
 
-    inputs_tf = tf.convert_to_tensor(inputs, dtype=tf.float32)
-    baseline_tf = tf.convert_to_tensor(baseline, dtype=tf.float32)
+    is_multi_input = isinstance(inputs, (list, tuple))
+    if is_multi_input:
+        inputs_tf = [tf.convert_to_tensor(input_array, dtype=tf.float32) for input_array in inputs]
+        baseline_tf = [tf.convert_to_tensor(base_array, dtype=tf.float32) for base_array in baseline]
+        gradient_accumulator = [tf.zeros_like(input_tensor) for input_tensor in inputs_tf]
+    else:
+        inputs_tf = tf.convert_to_tensor(inputs, dtype=tf.float32)
+        baseline_tf = tf.convert_to_tensor(baseline, dtype=tf.float32)
+        gradient_accumulator = tf.zeros_like(inputs_tf)
+
     alphas = tf.linspace(0.0, 1.0, steps + 1)
-    gradient_accumulator = tf.zeros_like(inputs_tf)
-
     for alpha in alphas:
-        interpolated = baseline_tf + alpha * (inputs_tf - baseline_tf)
-        with tf.GradientTape() as tape:
-            tape.watch(interpolated)
-            outputs = model(interpolated, training=False)
-            outputs = tf.reshape(outputs, (-1,))
-        gradients = tape.gradient(outputs, interpolated)
-        gradient_accumulator += gradients
+        if is_multi_input:
+            interpolated = [
+                base_tensor + alpha * (input_tensor - base_tensor)
+                for input_tensor, base_tensor in zip(inputs_tf, baseline_tf, strict=True)
+            ]
+            with tf.GradientTape() as tape:
+                tape.watch(interpolated)
+                outputs = positive_output_tensor(model(interpolated, training=False))
+            gradients = tape.gradient(outputs, interpolated)
+            gradient_accumulator = [
+                accumulator + gradient
+                for accumulator, gradient in zip(gradient_accumulator, gradients, strict=True)
+            ]
+        else:
+            interpolated = baseline_tf + alpha * (inputs_tf - baseline_tf)
+            with tf.GradientTape() as tape:
+                tape.watch(interpolated)
+                outputs = positive_output_tensor(model(interpolated, training=False))
+            gradients = tape.gradient(outputs, interpolated)
+            gradient_accumulator += gradients
 
-    average_gradients = gradient_accumulator / tf.cast(steps + 1, tf.float32)
+    scale = tf.cast(steps + 1, tf.float32)
+    if is_multi_input:
+        return [
+            ((input_tensor - base_tensor) * (accumulator / scale)).numpy()
+            for input_tensor, base_tensor, accumulator in zip(inputs_tf, baseline_tf, gradient_accumulator, strict=True)
+        ]
+
+    average_gradients = gradient_accumulator / scale
     attributions = (inputs_tf - baseline_tf) * average_gradients
     return attributions.numpy()
 
@@ -1080,27 +1366,81 @@ def integrated_gradients(
 def extract_native_dl_importance(
     *,
     model,
-    X_eval_transformed: np.ndarray,
+    X_eval_transformed,
     selected_features: list[str],
     max_native_samples: int,
     ig_steps: int,
+    beeswarm_path: Path | None = None,
+    beeswarm_title: str | None = None,
+    signed_attribution_path: Path | None = None,
+    sample_ids: np.ndarray | list[str] | None = None,
+    signed_metadata: dict[str, object] | None = None,
 ) -> pd.DataFrame:
     if tf is None:
         return pd.DataFrame(columns=["feature", "importance", "method"])
 
-    X_eval_transformed = np.asarray(X_eval_transformed, dtype=np.float32)
-    if X_eval_transformed.shape[0] > max_native_samples:
-        sample_indices = np.linspace(0, X_eval_transformed.shape[0] - 1, num=max_native_samples, dtype=int)
-        X_eval_transformed = X_eval_transformed[sample_indices]
+    is_multi_input = isinstance(X_eval_transformed, (list, tuple))
+    sample_id_array = np.asarray(sample_ids).astype(str) if sample_ids is not None else None
+    if is_multi_input:
+        transformed_inputs = [np.asarray(input_array, dtype=np.float32) for input_array in X_eval_transformed]
+        n_eval = transformed_inputs[0].shape[0]
+        if n_eval > max_native_samples:
+            sample_indices = np.linspace(0, n_eval - 1, num=max_native_samples, dtype=int)
+            transformed_inputs = [input_array[sample_indices] for input_array in transformed_inputs]
+            if sample_id_array is not None:
+                sample_id_array = sample_id_array[sample_indices]
+        baseline = [
+            np.repeat(np.zeros((1, input_array.shape[1]), dtype=np.float32), input_array.shape[0], axis=0)
+            for input_array in transformed_inputs
+        ]
+        attribution_parts = integrated_gradients(
+            model=model,
+            inputs=transformed_inputs,
+            baseline=baseline,
+            steps=ig_steps,
+        )
+        attributions = np.concatenate(attribution_parts, axis=1)
+        feature_values = np.concatenate(transformed_inputs, axis=1)
+    else:
+        transformed_inputs = np.asarray(X_eval_transformed, dtype=np.float32)
+        if transformed_inputs.shape[0] > max_native_samples:
+            sample_indices = np.linspace(0, transformed_inputs.shape[0] - 1, num=max_native_samples, dtype=int)
+            transformed_inputs = transformed_inputs[sample_indices]
+            if sample_id_array is not None:
+                sample_id_array = sample_id_array[sample_indices]
 
-    baseline = np.zeros((1, X_eval_transformed.shape[1]), dtype=np.float32)
-    baseline = np.repeat(baseline, X_eval_transformed.shape[0], axis=0)
-    attributions = integrated_gradients(
-        model=model,
-        inputs=X_eval_transformed,
-        baseline=baseline,
-        steps=ig_steps,
-    )
+        baseline = np.zeros((1, transformed_inputs.shape[1]), dtype=np.float32)
+        baseline = np.repeat(baseline, transformed_inputs.shape[0], axis=0)
+        attributions = integrated_gradients(
+            model=model,
+            inputs=transformed_inputs,
+            baseline=baseline,
+            steps=ig_steps,
+        )
+        feature_values = transformed_inputs
+
+    if attributions.shape[1] != len(selected_features):
+        selected_features = selected_features[: attributions.shape[1]]
+    if beeswarm_path is not None:
+        plot_beeswarm_attributions(
+            attributions,
+            feature_values,
+            selected_features,
+            beeswarm_path,
+            title=beeswarm_title or "Integrated Gradients beeswarm",
+        )
+    if signed_attribution_path is not None:
+        metadata = {"method": "integrated_gradients"}
+        metadata.update(signed_metadata or {})
+        save_signed_attributions_long(
+            attributions=attributions,
+            feature_values=feature_values,
+            feature_names=selected_features,
+            output_path=signed_attribution_path,
+            sample_ids=sample_id_array,
+            metadata=metadata,
+        )
+
     mean_abs_ig = np.mean(np.abs(attributions), axis=0)
     return pd.DataFrame(
         {
@@ -1332,7 +1672,12 @@ def main() -> None:
     log_progress(f"Loaded data | rows={len(df)} | numeric_features={X_numeric.shape[1]} | folds={len(split_definitions)}")
 
     if args.ml_classifier:
-        selected_ml_classifiers = list(dict.fromkeys(args.ml_classifier))
+        flat_ml_classifiers = [
+            classifier_name
+            for classifier_group in args.ml_classifier
+            for classifier_name in (classifier_group if isinstance(classifier_group, list) else [classifier_group])
+        ]
+        selected_ml_classifiers = list(dict.fromkeys(flat_ml_classifiers))
     elif args.ml_summary_csv:
         selected_ml_classifiers = select_top_ml_classifiers(Path(args.ml_summary_csv).resolve(), args.top_k_ml)
     else:
@@ -1397,6 +1742,7 @@ def main() -> None:
 
     fold_summary_df = summarize_fold_metrics(fold_metrics_df)
     fold_summary_df.to_csv(metrics_dir / "fold_metrics_summary.csv", index=False)
+    fold_summary_df.to_csv(metrics_dir / "paper_fold_metrics_summary.csv", index=False)
 
     pooled_rows = []
     for model_name, model_df in pooled_predictions_df.groupby("model_name"):
@@ -1421,14 +1767,36 @@ def main() -> None:
     pairwise_df = compare_models_foldwise(fold_metrics_df)
     pairwise_df.to_csv(metrics_dir / "foldwise_pairwise_comparisons.csv", index=False)
 
-    pairwise_case_df = build_pairwise_case_comparisons(
+    if args.skip_case_level_stats:
+        LOGGER.info("Skipping pooled case-level bootstrap/permutation pairwise statistics.")
+        pairwise_case_df = pd.DataFrame()
+    else:
+        LOGGER.info(
+            "Running pooled case-level pairwise statistics | bootstrap=%s | permutation_tests=%s",
+            args.n_bootstrap,
+            args.n_permutation_tests,
+        )
+        pairwise_case_df = build_pairwise_case_comparisons(
+            pooled_predictions_df,
+            threshold=args.classification_threshold,
+            n_bootstrap=args.n_bootstrap,
+            bootstrap_seed=args.bootstrap_seed,
+            n_permutation_tests=args.n_permutation_tests,
+        )
+        pairwise_case_df.to_csv(metrics_dir / "case_level_pairwise_comparisons.csv", index=False)
+
+    plot_mean_roc_comparison(
         pooled_predictions_df,
-        threshold=args.classification_threshold,
-        n_bootstrap=args.n_bootstrap,
-        bootstrap_seed=args.bootstrap_seed,
-        n_permutation_tests=args.n_permutation_tests,
+        curves_dir / "mean_roc_comparison_by_fold.png",
     )
-    pairwise_case_df.to_csv(metrics_dir / "case_level_pairwise_comparisons.csv", index=False)
+    plot_mean_roc_comparison(
+        pooled_predictions_df,
+        curves_dir / "mean_roc_all_models_publication.png",
+    )
+    plot_mean_pr_comparison(
+        pooled_predictions_df,
+        curves_dir / "mean_pr_comparison_by_fold.png",
+    )
 
     reference_model = pooled_metrics_df.iloc[0]["model_name"]
     for metric_name in ALL_METRICS:
@@ -1486,6 +1854,7 @@ def main() -> None:
             "classification_threshold": args.classification_threshold,
             "bootstrap_iterations": args.n_bootstrap,
             "permutation_tests": args.n_permutation_tests,
+            "case_level_stats_skipped": bool(args.skip_case_level_stats),
             "best_pooled_model": str(reference_model),
             "metrics_dir": str(metrics_dir),
             "curves_dir": str(curves_dir),
@@ -1579,6 +1948,19 @@ def main() -> None:
                 X_train=X_train,
                 X_eval=X_val,
                 max_native_samples=args.max_native_samples,
+                beeswarm_path=(
+                    native_dir / make_safe_slug(classifier_name) / f"fold_{fold_index:02d}_shap_beeswarm.png"
+                ),
+                beeswarm_title=f"{classifier_name} fold {fold_index} SHAP beeswarm",
+                signed_attribution_path=(
+                    native_dir / make_safe_slug(classifier_name) / f"fold_{fold_index:02d}_signed_shap_values.csv"
+                ),
+                sample_ids=sample_ids[np.asarray(split_definition["val_idx"], dtype=int)],
+                signed_metadata={
+                    "model_name": classifier_name,
+                    "model_family": "ml",
+                    "fold_index": fold_index,
+                },
             )
             fold_native_df["model_name"] = classifier_name
             fold_native_df["model_family"] = "ml"
@@ -1634,23 +2016,65 @@ def main() -> None:
                 outer_test_mask = pd.Series(False, index=df.index)
                 outer_train_mask.iloc[split_definition["train_idx"]] = True
                 outer_test_mask.iloc[split_definition["val_idx"]] = True
-                inner_train_mask, inner_val_mask = dl_module.build_inner_train_val_masks(
-                    df,
-                    candidate_mask=outer_train_mask,
-                    group_column=args.group_column,
-                    label_column=args.label_column,
-                    val_size=float(fold_args.get("val_size", 0.20)),
-                    random_state=int(fold_args.get("random_state", 42)) + fold_position - 1,
-                )
+                fold_validation_mode = str(fold_args.get("fold_validation_mode", "inner_val"))
+                if fold_validation_mode == "outer_val":
+                    fit_mask = outer_train_mask
+                else:
+                    inner_train_mask, _ = dl_module.build_inner_train_val_masks(
+                        df,
+                        candidate_mask=outer_train_mask,
+                        group_column=args.group_column,
+                        label_column=args.label_column,
+                        val_size=float(fold_args.get("val_size", 0.20)),
+                        random_state=int(fold_args.get("random_state", 42)) + fold_position - 1,
+                    )
+                    fit_mask = inner_train_mask
 
-                X_selected = X_numeric[selected_features].replace([np.inf, -np.inf], np.nan)
-                imputer = dl_module.SimpleImputer(strategy="median")
-                scaler = dl_module.StandardScaler()
-                X_train = imputer.fit_transform(X_selected.loc[inner_train_mask])
-                X_test = imputer.transform(X_selected.loc[outer_test_mask])
-                X_train = scaler.fit_transform(X_train)
-                X_test = scaler.transform(X_test)
+                is_dual_input = model_name in getattr(dl_module, "DUAL_INPUT_ARCHITECTURES", set())
                 y_test = y_all[outer_test_mask.to_numpy(dtype=bool)]
+
+                if is_dual_input:
+                    clinical_features_path = fold_dir / "selected_clinical_features.txt"
+                    radiomics_features_path = fold_dir / "selected_radiomics_features.txt"
+                    clinical_features = [
+                        line.strip()
+                        for line in clinical_features_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    radiomics_features = [
+                        line.strip()
+                        for line in radiomics_features_path.read_text(encoding="utf-8").splitlines()
+                        if line.strip()
+                    ]
+                    selected_features = clinical_features + radiomics_features
+                    X_selected = X_numeric[selected_features].replace([np.inf, -np.inf], np.nan)
+                    X_clinical = X_numeric[clinical_features].replace([np.inf, -np.inf], np.nan)
+                    X_radiomics = X_numeric[radiomics_features].replace([np.inf, -np.inf], np.nan)
+                    clinical_imputer = dl_module.SimpleImputer(strategy="median")
+                    radiomics_imputer = dl_module.SimpleImputer(strategy="median")
+                    clinical_scaler = dl_module.StandardScaler()
+                    radiomics_scaler = dl_module.StandardScaler()
+                    X_train_clinical = clinical_scaler.fit_transform(
+                        clinical_imputer.fit_transform(X_clinical.loc[fit_mask])
+                    )
+                    X_test_clinical = clinical_scaler.transform(
+                        clinical_imputer.transform(X_clinical.loc[outer_test_mask])
+                    )
+                    X_train_radiomics = radiomics_scaler.fit_transform(
+                        radiomics_imputer.fit_transform(X_radiomics.loc[fit_mask])
+                    )
+                    X_test_radiomics = radiomics_scaler.transform(
+                        radiomics_imputer.transform(X_radiomics.loc[outer_test_mask])
+                    )
+                    X_test = [X_test_clinical, X_test_radiomics]
+                else:
+                    X_selected = X_numeric[selected_features].replace([np.inf, -np.inf], np.nan)
+                    imputer = dl_module.SimpleImputer(strategy="median")
+                    scaler = dl_module.StandardScaler()
+                    X_train = imputer.fit_transform(X_selected.loc[fit_mask])
+                    X_test = imputer.transform(X_selected.loc[outer_test_mask])
+                    X_train = scaler.fit_transform(X_train)
+                    X_test = scaler.transform(X_test)
 
                 model_path = fold_dir / f"radiomics_{model_name}.keras"
                 loaded_model = tf.keras.models.load_model(
@@ -1661,9 +2085,22 @@ def main() -> None:
                 )
 
                 def predict_probability_fn(X_frame: pd.DataFrame) -> np.ndarray:
-                    transformed = imputer.transform(X_frame[selected_features].replace([np.inf, -np.inf], np.nan))
-                    transformed = scaler.transform(transformed)
-                    return loaded_model.predict(transformed, verbose=0).flatten()
+                    if is_dual_input:
+                        transformed_clinical = clinical_scaler.transform(
+                            clinical_imputer.transform(
+                                X_frame[clinical_features].replace([np.inf, -np.inf], np.nan)
+                            )
+                        )
+                        transformed_radiomics = radiomics_scaler.transform(
+                            radiomics_imputer.transform(
+                                X_frame[radiomics_features].replace([np.inf, -np.inf], np.nan)
+                            )
+                        )
+                        transformed = [transformed_clinical, transformed_radiomics]
+                    else:
+                        transformed = imputer.transform(X_frame[selected_features].replace([np.inf, -np.inf], np.nan))
+                        transformed = scaler.transform(transformed)
+                    return dl_module.predict_positive_probability(loaded_model, model_name, transformed)
 
                 fold_perm_df = compute_permutation_importance(
                     X_eval=X_selected.loc[outer_test_mask].copy(),
@@ -1684,6 +2121,19 @@ def main() -> None:
                     selected_features=selected_features,
                     max_native_samples=args.max_native_samples,
                     ig_steps=args.ig_steps,
+                    beeswarm_path=(
+                        native_dir / make_safe_slug(model_name) / f"fold_{fold_index:02d}_integrated_gradients_beeswarm.png"
+                    ),
+                    beeswarm_title=f"{model_name} fold {fold_index} Integrated Gradients beeswarm",
+                    signed_attribution_path=(
+                        native_dir / make_safe_slug(model_name) / f"fold_{fold_index:02d}_signed_integrated_gradients.csv"
+                    ),
+                    sample_ids=sample_ids[np.asarray(split_definition["val_idx"], dtype=int)],
+                    signed_metadata={
+                        "model_name": model_name,
+                        "model_family": "dl",
+                        "fold_index": fold_index,
+                    },
                 )
                 fold_native_df["model_name"] = model_name
                 fold_native_df["model_family"] = "dl"

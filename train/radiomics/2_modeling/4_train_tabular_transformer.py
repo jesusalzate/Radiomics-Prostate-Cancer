@@ -49,7 +49,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.class_weight import compute_class_weight
-from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 from train.common.radiomics_utils import (
     prepare_numeric_radiomics_matrix,
@@ -136,7 +136,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--threshold_strategy",
-        choices=["youden_val", "fixed_0.5"],
+        choices=["youden_val", "validation_youden", "fixed_0.5"],
         default="youden_val",
         help=(
             "How to convert probabilities into binary predictions. "
@@ -151,6 +151,27 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Optional post-hoc probability calibration fitted on the inner validation split "
             "and applied to the outer test fold."
+        ),
+    )
+    parser.add_argument(
+        "--fold_validation_mode",
+        choices=["inner_val", "outer_val"],
+        default="inner_val",
+        help=(
+            "For predefined folds, 'inner_val' keeps the stricter current workflow: "
+            "split outer-train into inner train/validation and evaluate on outer-val. "
+            "'outer_val' reproduces the notebooks: train on fold train_ids and use "
+            "fold val_ids both for early stopping and reported fold metrics."
+        ),
+    )
+    parser.add_argument(
+        "--final_refit_on_outer_train",
+        action="store_true",
+        help=(
+            "For predefined folds, use the inner validation split only to choose the "
+            "best epoch, calibration model, and threshold, then refit a fresh final "
+            "model on the full outer-training fold before evaluating the outer fold. "
+            "This makes the DL estimator use the same outer-training cases as ML."
         ),
     )
     parser.add_argument("--predefined_folds_json", default=None)
@@ -491,6 +512,7 @@ def train_and_evaluate_single_split(
     test_mask: pd.Series,
     fold_label: str,
     shared_feature_fold: dict | None = None,
+    refit_train_mask: pd.Series | None = None,
 ) -> tuple[dict, pd.DataFrame, dict]:
     """Train one Transformer split and return fold metrics plus test predictions."""
 
@@ -629,6 +651,56 @@ def train_and_evaluate_single_split(
     y_train = y_all[train_mask]
     y_val = y_all[val_mask]
     y_test = y_all[test_mask]
+
+    def build_inputs_for_masks(fit_mask: pd.Series, eval_mask: pd.Series):
+        if args.architecture in DUAL_INPUT_ARCHITECTURES:
+            X_clinical_local = X_all[clinical_features].replace([np.inf, -np.inf], np.nan)
+            X_radiomics_local = X_all[radiomics_features].replace([np.inf, -np.inf], np.nan)
+            clinical_imputer_local = SimpleImputer(strategy="median")
+            radiomics_imputer_local = SimpleImputer(strategy="median")
+            clinical_scaler_local = StandardScaler()
+            radiomics_scaler_local = StandardScaler()
+            X_fit_clinical = clinical_scaler_local.fit_transform(
+                clinical_imputer_local.fit_transform(X_clinical_local.loc[fit_mask])
+            )
+            X_eval_clinical = clinical_scaler_local.transform(
+                clinical_imputer_local.transform(X_clinical_local.loc[eval_mask])
+            )
+            X_fit_radiomics = radiomics_scaler_local.fit_transform(
+                radiomics_imputer_local.fit_transform(X_radiomics_local.loc[fit_mask])
+            )
+            X_eval_radiomics = radiomics_scaler_local.transform(
+                radiomics_imputer_local.transform(X_radiomics_local.loc[eval_mask])
+            )
+            return [X_fit_clinical, X_fit_radiomics], [X_eval_clinical, X_eval_radiomics]
+
+        X_selected_local = X_all[selected_features].replace([np.inf, -np.inf], np.nan)
+        imputer_local = SimpleImputer(strategy="median")
+        scaler_local = StandardScaler()
+        X_fit = scaler_local.fit_transform(imputer_local.fit_transform(X_selected_local.loc[fit_mask]))
+        X_eval = scaler_local.transform(imputer_local.transform(X_selected_local.loc[eval_mask]))
+        return X_fit, X_eval
+
+    def build_fresh_model(input_payload):
+        return build_model_by_architecture(
+            architecture=args.architecture,
+            input_dim=None if args.architecture in DUAL_INPUT_ARCHITECTURES else input_feature_count,
+            config=config,
+            feature_names=selected_features,
+            clinical_input_dim=input_payload[0].shape[1] if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
+            radiomics_input_dim=input_payload[1].shape[1] if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
+            clinical_feature_names=clinical_features if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
+            radiomics_feature_names=radiomics_features if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
+        )
+
+    def balanced_class_weight_for(y_values: np.ndarray):
+        if args.architecture in {"capsnet", "transformer_capsnet"} or (
+            args.architecture in {"transformer", "dual_transformer"} and args.transformer_loss == "bce"
+        ):
+            classes = np.unique(y_values)
+            weights = compute_class_weight("balanced", classes=classes, y=y_values)
+            return {int(class_id): float(weight) for class_id, weight in zip(classes, weights)}
+        return None
     log_progress(
         f"{fold_label} | split summary | train {summarize_binary_labels(y_train)} | "
         f"val {summarize_binary_labels(y_val)} | test {summarize_binary_labels(y_test)} | "
@@ -644,16 +716,7 @@ def train_and_evaluate_single_split(
         patience=args.patience,
         transformer_loss=args.transformer_loss,
     )
-    model = build_model_by_architecture(
-        architecture=args.architecture,
-        input_dim=None if args.architecture in DUAL_INPUT_ARCHITECTURES else input_feature_count,
-        config=config,
-        feature_names=selected_features,
-        clinical_input_dim=X_train[0].shape[1] if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
-        radiomics_input_dim=X_train[1].shape[1] if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
-        clinical_feature_names=clinical_features if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
-        radiomics_feature_names=radiomics_features if args.architecture in DUAL_INPUT_ARCHITECTURES else None,
-    )
+    model = build_fresh_model(X_train)
     (output_dir / "model_summary.txt").write_text(
         "\n".join(
             [
@@ -677,6 +740,17 @@ def train_and_evaluate_single_split(
         restore_best_weights=True,
         verbose=1,
     )
+    callbacks = [early_stop]
+    if args.architecture == "capsnet":
+        callbacks.append(
+            ReduceLROnPlateau(
+                monitor="val_loss",
+                factor=0.5,
+                patience=8,
+                min_lr=1e-6,
+                verbose=1,
+            )
+        )
     log_progress(
         f"{fold_label} | training {args.architecture} | input_dim={input_feature_count} | "
         f"batch_size={config.batch_size} | epochs={config.epochs} | patience={config.patience}"
@@ -691,13 +765,8 @@ def train_and_evaluate_single_split(
         y_val,
         num_classes=config.num_classes,
     )
-    class_weight = None
-    if args.architecture == "capsnet" or (
-        args.architecture in {"transformer", "dual_transformer"} and args.transformer_loss == "bce"
-    ):
-        classes = np.unique(y_train)
-        weights = compute_class_weight("balanced", classes=classes, y=y_train)
-        class_weight = {int(class_id): float(weight) for class_id, weight in zip(classes, weights)}
+    class_weight = balanced_class_weight_for(y_train)
+    if class_weight is not None:
         log_progress(f"{fold_label} | balanced class weights: {class_weight}")
     history = model.fit(
         X_train,
@@ -705,13 +774,45 @@ def train_and_evaluate_single_split(
         validation_data=(X_val, y_val_model),
         epochs=config.epochs,
         batch_size=config.batch_size,
-        callbacks=[early_stop],
+        callbacks=callbacks,
         class_weight=class_weight,
         verbose=2,
     )
 
+    best_epoch = int(np.argmax(history.history.get("val_auc", [0.0])) + 1)
     val_prob_raw = predict_positive_probability(model, args.architecture, X_val)
-    test_prob_raw = predict_positive_probability(model, args.architecture, X_test)
+    model_for_test = model
+    X_test_for_prediction = X_test
+    refit_history = None
+    refit_train_size = int(train_mask.sum())
+    if args.final_refit_on_outer_train and refit_train_mask is not None:
+        X_refit_train, X_refit_test = build_inputs_for_masks(refit_train_mask, test_mask)
+        y_refit_train = y_all[refit_train_mask]
+        y_refit_model = prepare_targets_for_architecture(
+            args.architecture,
+            y_refit_train,
+            num_classes=config.num_classes,
+        )
+        refit_class_weight = balanced_class_weight_for(y_refit_train)
+        final_model = build_fresh_model(X_refit_train)
+        log_progress(
+            f"{fold_label} | final refit on full outer train | "
+            f"n={len(y_refit_train)} | epochs={best_epoch} | "
+            f"class_weight={refit_class_weight}"
+        )
+        refit_history = final_model.fit(
+            X_refit_train,
+            y_refit_model,
+            epochs=max(1, best_epoch),
+            batch_size=config.batch_size,
+            class_weight=refit_class_weight,
+            verbose=2,
+        )
+        model_for_test = final_model
+        X_test_for_prediction = X_refit_test
+        refit_train_size = int(refit_train_mask.sum())
+
+    test_prob_raw = predict_positive_probability(model_for_test, args.architecture, X_test_for_prediction)
     calibrator = fit_probability_calibrator(y_val, val_prob_raw, args.probability_calibration)
     if args.probability_calibration != "none" and calibrator is None:
         log_progress(
@@ -751,6 +852,9 @@ def train_and_evaluate_single_split(
         "validation_youden_threshold": float(val_youden_threshold),
         "threshold_strategy": args.threshold_strategy,
         "probability_calibration": args.probability_calibration,
+        "final_refit_on_outer_train": bool(args.final_refit_on_outer_train and refit_train_mask is not None),
+        "best_epoch_from_inner_validation": int(best_epoch),
+        "refit_train_size": int(refit_train_size),
         "calibration_summary": calibration_summary,
         "test_metrics_at_fixed_0_5": test_metrics_fixed_0_5,
         "test_metrics_at_validation_youden": test_metrics_val_youden,
@@ -772,7 +876,6 @@ def train_and_evaluate_single_split(
     predictions["prediction_validation_youden"] = test_pred_val_youden
     predictions["prediction"] = test_pred
     predictions.to_csv(output_dir / "test_predictions.csv", index=False)
-    best_epoch = int(np.argmax(history.history.get("val_auc", [0.0])) + 1)
     log_progress(
         f"{fold_label} | training finished | best_epoch={best_epoch} | "
         f"threshold_strategy={args.threshold_strategy} | threshold={threshold:.4f} | "
@@ -824,6 +927,8 @@ def train_and_evaluate_single_split(
         encoding="utf-8",
     )
     pd.DataFrame(history.history).to_csv(output_dir / "training_history.csv", index=False)
+    if refit_history is not None:
+        pd.DataFrame(refit_history.history).to_csv(output_dir / "refit_training_history.csv", index=False)
     plot_training_history(history, output_dir / "training_curves.png")
     plot_roc(y_test, test_prob, output_dir / "roc_test.png")
     if args.probability_calibration != "none":
@@ -835,7 +940,7 @@ def train_and_evaluate_single_split(
             title=f"{fold_label} validation calibration",
         )
 
-    model.save(output_dir / f"radiomics_{args.architecture}.keras")
+    model_for_test.save(output_dir / f"radiomics_{args.architecture}.keras")
     run_config = {
         "feature_table": str(feature_table),
         "arguments": vars(args),
@@ -851,6 +956,7 @@ def train_and_evaluate_single_split(
             "train": int(train_mask.sum()),
             "validation": int(val_mask.sum()),
             "test": int(test_mask.sum()),
+            "refit_train": int(refit_train_size),
         },
         "fold_label": fold_label,
     }
@@ -944,14 +1050,22 @@ def main() -> None:
             outer_train_mask.iloc[split_definition["train_idx"]] = True
             outer_test_mask.iloc[split_definition["val_idx"]] = True
 
-            inner_train_mask, inner_val_mask = build_inner_train_val_masks(
-                df,
-                candidate_mask=outer_train_mask,
-                group_column=args.group_column,
-                label_column=args.label_column,
-                val_size=args.val_size,
-                random_state=args.random_state + fold_position - 1,
-            )
+            if args.fold_validation_mode == "outer_val":
+                inner_train_mask = outer_train_mask.copy()
+                inner_val_mask = outer_test_mask.copy()
+                log_progress(
+                    f"{fold_name} | notebook-style fold validation: using outer train_ids for training "
+                    "and outer val_ids for both early stopping and reported fold metrics"
+                )
+            else:
+                inner_train_mask, inner_val_mask = build_inner_train_val_masks(
+                    df,
+                    candidate_mask=outer_train_mask,
+                    group_column=args.group_column,
+                    label_column=args.label_column,
+                    val_size=args.val_size,
+                    random_state=args.random_state + fold_position - 1,
+                )
             if not inner_train_mask.any() or not inner_val_mask.any() or not outer_test_mask.any():
                 raise ValueError(
                     f"{fold_name} produced an empty train/validation/test partition."
@@ -980,6 +1094,7 @@ def main() -> None:
                 test_mask=outer_test_mask,
                 fold_label=fold_name,
                 shared_feature_fold=shared_feature_fold,
+                refit_train_mask=outer_train_mask,
             )
             fold_metrics_rows.append(
                 {
@@ -1027,6 +1142,8 @@ def main() -> None:
                 if column not in {"fold_index", "fold_label"} and len(cv_metrics_df) > 1
             },
             "threshold_strategy": args.threshold_strategy,
+            "fold_validation_mode": args.fold_validation_mode,
+            "final_refit_on_outer_train": bool(args.final_refit_on_outer_train),
             "oof_metrics": oof_metrics_selected,
             "oof_metrics_fixed_0_5": oof_metrics_fixed_0_5,
             "oof_metrics_validation_youden": oof_metrics_validation_youden,

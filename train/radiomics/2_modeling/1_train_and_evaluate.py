@@ -79,9 +79,11 @@ from train.common.radiomics_utils import (
 )
 from train.common.runtime_utils import (
     export_shared_fold_feature_plan,
+    load_shared_fold_feature_plan,
     load_predefined_folds,
     resolve_identifier_array,
     resolve_predefined_folds_to_indices,
+    resolve_shared_features_for_fold,
 )
 
 mpl.use("Agg")
@@ -646,6 +648,66 @@ def build_cv_fold_plan_from_split_definitions(
         )
 
     return fold_plan, selection_records
+
+
+
+def build_cv_fold_plan_from_shared_features(
+    *,
+    X: pd.DataFrame,
+    split_definitions: list[dict[str, object]],
+    sample_ids: np.ndarray,
+    shared_feature_payload: dict,
+    forced_feature_columns: list[str],
+) -> tuple[list[dict], list[dict]]:
+    """Build a fold plan from a locked feature-plan JSON and optional forced columns."""
+
+    missing_forced_features = [feature_name for feature_name in forced_feature_columns if feature_name not in X.columns]
+    if missing_forced_features:
+        raise ValueError(f"Forced feature columns are missing from the feature table: {missing_forced_features}")
+
+    fold_plan = []
+    for split_definition in split_definitions:
+        train_idx = np.asarray(split_definition["train_idx"], dtype=int)
+        val_idx = np.asarray(split_definition["val_idx"], dtype=int)
+        global_fold_index = int(split_definition["fold_index"])
+        repeat_index = int(split_definition.get("Repeat", 1))
+        fold_in_repeat = int(split_definition.get("fold_in_repeat", global_fold_index))
+
+        shared_fold = resolve_shared_features_for_fold(
+            payload=shared_feature_payload,
+            fold_index=global_fold_index,
+            val_identifiers=sample_ids[val_idx],
+        )
+        selected_features = list(shared_fold["selected_features"])
+        for feature_name in forced_feature_columns:
+            if feature_name not in selected_features:
+                selected_features.append(feature_name)
+
+        missing_selected_features = [feature_name for feature_name in selected_features if feature_name not in X.columns]
+        if missing_selected_features:
+            raise ValueError(
+                "The shared feature plan contains features missing from the local table. "
+                f"Fold={global_fold_index}, first missing={missing_selected_features[:10]}"
+            )
+
+        selection_metadata = dict(shared_fold.get("selection_metadata", {}))
+        selection_metadata["feature_plan_source"] = "shared_feature_folds_json"
+        selection_metadata["forced_feature_columns"] = forced_feature_columns
+        selection_metadata["feature_limit"] = len(selected_features)
+
+        fold_plan.append(
+            {
+                "fold_index": global_fold_index,
+                "Repeat": repeat_index,
+                "fold_in_repeat": fold_in_repeat,
+                "train_idx": train_idx,
+                "val_idx": val_idx,
+                "selected_features": selected_features,
+                "selection_metadata": selection_metadata,
+            }
+        )
+
+    return fold_plan, []
 
 
 def build_cv_fold_plan(
@@ -1827,6 +1889,24 @@ def main():
         ),
     )
     parser.add_argument(
+        "--shared_feature_folds_json",
+        type=str,
+        default=None,
+        help=(
+            "Optional locked fold-wise feature plan to reuse instead of recomputing feature selection. "
+            "Requires --predefined_folds_json so validation folds can be matched safely."
+        ),
+    )
+    parser.add_argument(
+        "--forced_feature_columns",
+        nargs="+",
+        default=[],
+        help=(
+            "Feature columns that must be appended to every fold's selected feature list. "
+            "Useful for appending clinical variables to a locked radiomics feature plan."
+        ),
+    )
+    parser.add_argument(
         "--predefined_fold_id_type",
         type=str,
         choices=["sample_id", "patient_study", "patient_id_study_id", "patient_id", "study_id"],
@@ -2004,83 +2084,112 @@ def main():
         predefined_folds_path = (
             Path(args.predefined_folds_json).resolve() if args.predefined_folds_json is not None else None
         )
-        fold_plan_cache_key = build_fold_plan_cache_key(
-            data_path=data_path,
-            n_splits=args.n_splits,
-            n_repeats=args.n_repeats,
-            base_random_state=DEFAULT_BASE_RANDOM_STATE,
-            feature_strategy=args.feature_strategy,
-            min_features=args.min_features,
-            max_features_cap=args.max_features_cap,
-            samples_per_feature=args.samples_per_feature,
-            minority_samples_per_feature=args.minority_samples_per_feature,
-            fdr_alpha=args.fdr_alpha,
-            correlation_threshold=args.correlation_threshold,
-            predefined_folds_path=predefined_folds_path,
-        )
-        fold_plan_cache_path = cache_root / f"fold_plan_{fold_plan_cache_key}.joblib"
-        if fold_plan_cache_path.exists() and not args.refresh_selection_cache:
-            log_progress(f"Loading cached fold plan and feature selection from: {fold_plan_cache_path}")
-            fold_plan, shared_selection_records = load_cached_fold_plan(fold_plan_cache_path)
-        else:
-            if predefined_folds_path is not None:
-                log_progress(
-                    f"Loading predefined fold assignments from: {predefined_folds_path}"
-                )
-                predefined_payload = load_predefined_folds(predefined_folds_path)
-                fold_identifiers = resolve_identifier_array(
-                    sample_ids=sample_ids,
-                    patient_ids=patient_ids,
-                    study_ids=study_ids,
-                    identifier_type=args.predefined_fold_id_type,
-                )
-                split_definitions = resolve_predefined_folds_to_indices(
-                    payload=predefined_payload,
-                    identifiers=fold_identifiers,
-                )
-                log_progress(
-                    f"Precomputing feature subsets over {len(split_definitions)} predefined folds "
-                    "for reuse across models..."
-                )
-                fold_plan, shared_selection_records = build_cv_fold_plan_from_split_definitions(
-                    X=X,
-                    y=y,
-                    split_definitions=split_definitions,
-                    feature_strategy=args.feature_strategy,
-                    min_features=args.min_features,
-                    max_features_cap=args.max_features_cap,
-                    samples_per_feature=args.samples_per_feature,
-                    minority_samples_per_feature=args.minority_samples_per_feature,
-                    fdr_alpha=args.fdr_alpha,
-                    correlation_threshold=args.correlation_threshold,
-                    selection_n_jobs=args.selection_n_jobs,
-                )
-            else:
-                log_progress(
-                    "Precomputing grouped CV folds and training-only feature subsets for reuse across models..."
-                )
-                fold_plan, shared_selection_records = build_cv_fold_plan(
-                    X=X,
-                    y=y,
-                    groups=groups,
-                    n_splits=args.n_splits,
-                    n_repeats=args.n_repeats,
-                    base_random_state=DEFAULT_BASE_RANDOM_STATE,
-                    feature_strategy=args.feature_strategy,
-                    min_features=args.min_features,
-                    max_features_cap=args.max_features_cap,
-                    samples_per_feature=args.samples_per_feature,
-                    minority_samples_per_feature=args.minority_samples_per_feature,
-                    fdr_alpha=args.fdr_alpha,
-                    correlation_threshold=args.correlation_threshold,
-                    selection_n_jobs=args.selection_n_jobs,
-                )
-            save_cached_fold_plan(
-                cache_path=fold_plan_cache_path,
-                fold_plan=fold_plan,
-                selection_records=shared_selection_records,
+        if args.shared_feature_folds_json:
+            if predefined_folds_path is None:
+                raise ValueError("--shared_feature_folds_json requires --predefined_folds_json.")
+            log_progress(f"Loading locked shared fold feature plan from: {args.shared_feature_folds_json}")
+            predefined_payload = load_predefined_folds(predefined_folds_path)
+            fold_identifiers = resolve_identifier_array(
+                sample_ids=sample_ids,
+                patient_ids=patient_ids,
+                study_ids=study_ids,
+                identifier_type=args.predefined_fold_id_type,
             )
-            log_progress(f"Saved grouped fold-plan cache to: {fold_plan_cache_path}")
+            split_definitions = resolve_predefined_folds_to_indices(
+                payload=predefined_payload,
+                identifiers=fold_identifiers,
+            )
+            shared_feature_payload = load_shared_fold_feature_plan(Path(args.shared_feature_folds_json).resolve())
+            fold_plan, shared_selection_records = build_cv_fold_plan_from_shared_features(
+                X=X,
+                split_definitions=split_definitions,
+                sample_ids=sample_ids,
+                shared_feature_payload=shared_feature_payload,
+                forced_feature_columns=list(args.forced_feature_columns),
+            )
+            log_progress(
+                f"Prepared {len(fold_plan)} folds from locked shared feature plan. "
+                f"Forced features appended per fold: {args.forced_feature_columns}"
+            )
+        else:
+            fold_plan_cache_key = build_fold_plan_cache_key(
+                data_path=data_path,
+                n_splits=args.n_splits,
+                n_repeats=args.n_repeats,
+                base_random_state=DEFAULT_BASE_RANDOM_STATE,
+                feature_strategy=args.feature_strategy,
+                min_features=args.min_features,
+                max_features_cap=args.max_features_cap,
+                samples_per_feature=args.samples_per_feature,
+                minority_samples_per_feature=args.minority_samples_per_feature,
+                fdr_alpha=args.fdr_alpha,
+                correlation_threshold=args.correlation_threshold,
+                predefined_folds_path=predefined_folds_path,
+            )
+            fold_plan_cache_path = cache_root / f"fold_plan_{fold_plan_cache_key}.joblib"
+            if fold_plan_cache_path.exists() and not args.refresh_selection_cache:
+                log_progress(f"Loading cached fold plan and feature selection from: {fold_plan_cache_path}")
+                fold_plan, shared_selection_records = load_cached_fold_plan(fold_plan_cache_path)
+            else:
+                if predefined_folds_path is not None:
+                    log_progress(
+                        f"Loading predefined fold assignments from: {predefined_folds_path}"
+                    )
+                    predefined_payload = load_predefined_folds(predefined_folds_path)
+                    fold_identifiers = resolve_identifier_array(
+                        sample_ids=sample_ids,
+                        patient_ids=patient_ids,
+                        study_ids=study_ids,
+                        identifier_type=args.predefined_fold_id_type,
+                    )
+                    split_definitions = resolve_predefined_folds_to_indices(
+                        payload=predefined_payload,
+                        identifiers=fold_identifiers,
+                    )
+                    log_progress(
+                        f"Precomputing feature subsets over {len(split_definitions)} predefined folds "
+                        "for reuse across models..."
+                    )
+                    fold_plan, shared_selection_records = build_cv_fold_plan_from_split_definitions(
+                        X=X,
+                        y=y,
+                        split_definitions=split_definitions,
+                        feature_strategy=args.feature_strategy,
+                        min_features=args.min_features,
+                        max_features_cap=args.max_features_cap,
+                        samples_per_feature=args.samples_per_feature,
+                        minority_samples_per_feature=args.minority_samples_per_feature,
+                        fdr_alpha=args.fdr_alpha,
+                        correlation_threshold=args.correlation_threshold,
+                        selection_n_jobs=args.selection_n_jobs,
+                    )
+                else:
+                    log_progress(
+                        "Precomputing grouped CV folds and training-only feature subsets for reuse across models..."
+                    )
+                    fold_plan, shared_selection_records = build_cv_fold_plan(
+                        X=X,
+                        y=y,
+                        groups=groups,
+                        n_splits=args.n_splits,
+                        n_repeats=args.n_repeats,
+                        base_random_state=DEFAULT_BASE_RANDOM_STATE,
+                        feature_strategy=args.feature_strategy,
+                        min_features=args.min_features,
+                        max_features_cap=args.max_features_cap,
+                        samples_per_feature=args.samples_per_feature,
+                        minority_samples_per_feature=args.minority_samples_per_feature,
+                        fdr_alpha=args.fdr_alpha,
+                        correlation_threshold=args.correlation_threshold,
+                        selection_n_jobs=args.selection_n_jobs,
+                    )
+                save_cached_fold_plan(
+                    cache_path=fold_plan_cache_path,
+                    fold_plan=fold_plan,
+                    selection_records=shared_selection_records,
+                )
+                log_progress(f"Saved grouped fold-plan cache to: {fold_plan_cache_path}")
+
 
         fold_plan_summary_df = summarize_fold_plan(fold_plan=fold_plan, sample_ids=sample_ids)
         fold_plan_summary_path = experiment_dir / "fold_plan_summary.csv"

@@ -1,0 +1,294 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{multirow}
+\usepackage{amsmath}
+\usepackage{authblk}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{url}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    citecolor=blue,
+    urlcolor=blue
+}
+
+\title{Radiomics-Based Machine Learning and Deep Learning for Clinically Significant Prostate Cancer Detection on Multiparametric MRI}
+
+\author[1]{Author One}
+\author[1]{Author Two}
+\author[2]{Author Three}
+\affil[1]{Department or Institution, City, Country}
+\affil[2]{Department or Institution, City, Country}
+
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+\textbf{What to include:} Summarize the clinical problem, cohort, imaging modalities, radiomics extraction strategy, machine learning and deep learning comparison, primary metrics, and the main finding. Mention that the best radiomics-only machine learning model achieved the strongest AUROC among the available radiomics-only comparisons, while the hybrid radiomics-plus-clinical model improved performance once those results are finalized.
+
+\textbf{Suggested structure:} Background, objective, methods, results, conclusion. Keep the abstract concise and quantitative. Include the number of cases, number of positive csPCa cases, cross-validation design, and the best AUROC/AUPRC values.
+\end{abstract}
+
+\section{Introduction}
+\textbf{What to include:} Introduce clinically significant prostate cancer (csPCa) detection and the role of multiparametric MRI. Explain why radiomics can provide quantitative image biomarkers beyond visual assessment. Present the motivation for comparing classical machine learning models against deep tabular models using the same radiomic feature space. End with the study objective: to benchmark radiomics-only ML and DL models and to explore whether adding clinical variables improves prediction.
+
+\section{Related Work}
+\textbf{What to include:} Review prior work on prostate MRI radiomics, PI-RADS or MRI-based csPCa prediction, classical ML models for radiomics, deep learning approaches for tabular radiomics, and hybrid radiomics-clinical models. Emphasize gaps addressed by this study: aligned folds, out-of-fold evaluation, patient-level bootstrapping, calibrated probabilities, threshold analysis, and interpretability.
+
+\section{Materials and Methods}
+
+\subsection{Study Cohort and Outcome Definition}
+\textbf{What to include:} Describe the source cohort, inclusion and exclusion criteria, number of MRI studies, number of patients, and label definition. In the current result files, the radiomics-only comparison contains 1,295 cases, 220 positive csPCa cases, and 1,273 unique patient-level bootstrap units. Define csPCa as ISUP grade group $\geq 2$ if this matches the final dataset annotation.
+
+\subsection{MRI Sequences and Regions of Interest}
+\textbf{What to include:} Describe the multiparametric MRI sequences used for feature extraction: T2-weighted imaging, ADC, and DWI. Specify whether features were extracted from the prostate gland, lesion masks, full image, or multiple anatomical regions. State which segmentation source was used and whether masks were manually curated, automatically generated, or derived from an external pipeline.
+
+\subsection{Radiomics Feature Extraction}
+\textbf{What to include:} Explain the PyRadiomics extraction workflow and parameter files. Report image preprocessing, resampling, bin width, normalization, interpolation, and extracted feature families such as first-order, shape, GLCM, GLRLM, GLSZM, GLDM, NGTDM, and filtered features if applicable. Mention that modality-specific tables were built for T2, ADC, and DWI and concatenated into a multimodal feature table.
+
+\subsection{Feature Table Construction}
+\textbf{What to include:} Describe how modality-specific radiomics CSV files were merged into a single table. State how duplicate shape features were handled; in this repository, shape features are retained from one selected modality to avoid repeated anatomical shape information across T2, ADC, and DWI. Mention patient identifiers, study identifiers, labels, and final feature counts.
+
+\subsection{Feature Selection}
+\textbf{What to include:} Describe the leakage-safe feature selection performed inside training folds only. Include univariate scoring, correlation pruning, feature limits, and how selected feature lists were shared between classical ML and deep tabular models. Refer to the shared fold feature plan under:
+\begin{quote}
+\path{results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_feature_prep/shared_fold_feature_plan.json}
+\end{quote}
+
+\subsection{Cross-Validation Strategy}
+\textbf{What to include:} Describe the grouped 5-fold cross-validation plan and how patient-level grouping prevented leakage between training and test folds. State whether the fold assignment came from PI-CAI/nnUNet identifiers or another source. Mention that all ML and DL models were evaluated using aligned out-of-fold predictions.
+
+\subsection{Classical Machine Learning Models}
+\textbf{What to include:} List the classical ML algorithms evaluated during ranking and final benchmarking. Based on current outputs, finalist models include Random Forest, Gradient Boosting, and LightGBM. Describe preprocessing, class imbalance strategy, hyperparameter tuning, calibration, threshold selection, and final out-of-fold probability export.
+
+\subsection{Deep Tabular Models}
+\textbf{What to include:} Describe the deep learning architectures trained on selected radiomics features. Current radiomics-only outputs include a tabular Transformer, CapsNet, and Transformer-CapsNet hybrid. Include optimizer, loss function, early stopping, validation split, probability calibration, and threshold selection. Mention that each architecture was trained across the same 5 outer folds used for the ML comparison.
+
+\subsection{Hybrid Radiomics-Clinical Model}
+\textbf{What to include:} Describe the planned or completed model that combines radiomics features with clinical variables. Specify clinical variables such as PSA, age, prostate volume, PSA density, prior biopsy status, PI-RADS score, or other variables actually used. Explain whether variables were concatenated into a single feature table or modeled with a dual-branch architecture. This section should be updated once the final clinical-augmented results are available.
+
+\subsection{Evaluation Metrics}
+\textbf{What to include:} Define primary metrics: AUROC, AUPRC, sensitivity, specificity, balanced accuracy, and Brier score. Define secondary metrics: F1 score, MCC, accuracy, PPV, and NPV. Explain that confidence intervals were estimated using bootstrap resampling at the patient level when patient identifiers were available. State the number of bootstrap iterations; current reports used 1,000 bootstrap iterations.
+
+\subsection{Statistical Analysis}
+\textbf{What to include:} Describe model ranking, confidence intervals, and pairwise comparisons if used. Explain how calibration, decision-curve analysis, and thresholded predictions were assessed. State whether the final comparison used a fixed 0.5 threshold or a validation-derived Youden threshold. The current thresholded report uses the precomputed \texttt{prediction\_validation\_youden} column while retaining calibrated probabilities for AUROC, AUPRC, and Brier score.
+
+\subsection{Interpretability Analysis}
+\textbf{What to include:} Describe global and model-specific interpretability methods. Current outputs include SHAP/native importance for classical ML models, integrated-gradient/native importance for deep models, and permutation importance. Explain how top features were compared across models and folds.
+
+\section{Results}
+
+\subsection{Cohort Characteristics}
+\textbf{What to include:} Report the number of cases, patients, positive csPCa cases, negative cases, age distribution, PSA distribution, PI-RADS distribution, and any other clinical variables available. Include a table comparing positive and negative groups. This table should be completed after locking the final clinical metadata.
+
+\begin{table}[htbp]
+\centering
+\caption{Cohort characteristics. Replace placeholders with final cohort statistics.}
+\label{tab:cohort}
+\begin{tabular}{lccc}
+\toprule
+Variable & Overall & Non-csPCa & csPCa \\
+\midrule
+Cases, n & 1295 & 1075 & 220 \\
+Patients, n & 1273 & -- & -- \\
+Age, years & TBD & TBD & TBD \\
+PSA, ng/mL & TBD & TBD & TBD \\
+Prostate volume, mL & TBD & TBD & TBD \\
+PI-RADS category & TBD & TBD & TBD \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Radiomics-Only Machine Learning versus Deep Learning}
+\textbf{What to include:} Present the main comparison between classical ML and deep tabular models using aligned out-of-fold predictions. Discuss which model ranked best by AUROC, AUPRC, sensitivity, specificity, balanced accuracy, and Brier score. Highlight that Random Forest currently ranks first by AUROC, while the Transformer has the highest AUPRC among the listed models.
+
+\begin{table}[htbp]
+\centering
+\caption{Radiomics-only model comparison using aligned out-of-fold predictions. Confidence intervals should be reported in the final version using patient-level bootstrap estimates.}
+\label{tab:radiomics_only_main}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lcccccc}
+\toprule
+Model & AUROC & AUPRC & Sensitivity & Specificity & Balanced accuracy & Brier score \\
+\midrule
+Random Forest & 0.818 & 0.444 & 0.800 & 0.730 & 0.765 & 0.116 \\
+Transformer & 0.809 & 0.470 & 0.750 & 0.695 & 0.722 & 0.115 \\
+Gradient Boosting & 0.797 & 0.433 & 0.800 & 0.653 & 0.727 & 0.120 \\
+LightGBM & 0.784 & 0.429 & 0.759 & 0.726 & 0.742 & 0.123 \\
+CapsNet & 0.780 & 0.435 & 0.682 & 0.767 & 0.725 & 0.119 \\
+Transformer-CapsNet & 0.749 & 0.409 & 0.755 & 0.728 & 0.741 & 0.122 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\subsection{Discrimination Performance}
+\textbf{What to include:} Show ROC and precision-recall curves for all radiomics-only models. Discuss whether gains are consistent across AUROC and AUPRC, noting that AUPRC is especially relevant under class imbalance.
+
+\begin{figure}[htbp]
+\centering
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/radiomics/clinical_comparison_thresholded/figures/roc_comparison.png}
+\caption{ROC curves.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/radiomics/clinical_comparison_thresholded/figures/pr_comparison.png}
+\caption{Precision-recall curves.}
+\end{subfigure}
+\caption{Discrimination performance of radiomics-only ML and DL models.}
+\label{fig:roc_pr}
+\end{figure}
+
+\subsection{Calibration and Clinical Utility}
+\textbf{What to include:} Report calibration curves, Brier score ranking, and decision-curve analysis. Explain whether models are clinically useful across plausible threshold probabilities and whether calibration differs between ML and DL models.
+
+\begin{figure}[htbp]
+\centering
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/radiomics/clinical_comparison_thresholded/figures/calibration_comparison.png}
+\caption{Calibration curves.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/radiomics/clinical_comparison_thresholded/figures/decision_curve_net_benefit.png}
+\caption{Decision-curve analysis.}
+\end{subfigure}
+\caption{Calibration and clinical net benefit of radiomics-only models.}
+\label{fig:calibration_dca}
+\end{figure}
+
+\subsection{Threshold-Based Classification}
+\textbf{What to include:} Present sensitivity, specificity, balanced accuracy, F1 score, PPV, NPV, and confusion matrices using the chosen thresholding strategy. The current report uses validation-derived Youden predictions saved in \texttt{prediction\_validation\_youden}.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.85\textwidth]{results/radiomics/clinical_comparison_thresholded/figures/confusion_matrices_top_models.png}
+\caption{Confusion matrices for top radiomics-only models.}
+\label{fig:confusion}
+\end{figure}
+
+\subsection{Model Ranking and Uncertainty}
+\textbf{What to include:} Show bootstrap confidence intervals for AUROC, AUPRC, and Brier score. State whether model rankings are stable or overlapping across confidence intervals.
+
+\begin{figure}[htbp]
+\centering
+\begin{subfigure}{0.32\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/radiomics/clinical_comparison_thresholded/figures/auroc_ranking_bootstrap_ci.png}
+\caption{AUROC.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.32\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/radiomics/clinical_comparison_thresholded/figures/auprc_ranking_bootstrap_ci.png}
+\caption{AUPRC.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.32\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/radiomics/clinical_comparison_thresholded/figures/brier_ranking_bootstrap_ci.png}
+\caption{Brier score.}
+\end{subfigure}
+\caption{Bootstrap ranking uncertainty for radiomics-only models.}
+\label{fig:ranking_ci}
+\end{figure}
+
+\subsection{Interpretability Findings}
+\textbf{What to include:} Summarize top radiomics features across ML and DL models. Discuss whether selected features are biologically or clinically plausible, whether top features are stable across folds, and whether different model families rely on similar imaging signatures.
+
+\begin{figure}[htbp]
+\centering
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/radiomics/final_model_benchmark_with_interpretability_calibrated/interpretability/native/random_forest/shap_top_features.png}
+\caption{Random Forest SHAP/native importance.}
+\end{subfigure}
+\hfill
+\begin{subfigure}{0.48\textwidth}
+\centering
+\includegraphics[width=\textwidth]{results/radiomics/final_model_benchmark_with_interpretability_calibrated/interpretability/native/transformer/integrated_gradients_top_features.png}
+\caption{Transformer integrated gradients/native importance.}
+\end{subfigure}
+\caption{Example interpretability outputs for finalist radiomics-only models.}
+\label{fig:interpretability_examples}
+\end{figure}
+
+\subsection{Hybrid Radiomics-Clinical Model}
+\textbf{What to include:} Present the final hybrid model results after they are generated. This should be the final results subsection because it answers whether clinical variables improve over radiomics alone. Compare the best hybrid model against the best radiomics-only ML and DL baselines using the same cohort, folds, metrics, bootstrap procedure, and thresholding strategy. State clearly that these results are not yet available in the current repository if submitting a draft before integration.
+
+\begin{table}[htbp]
+\centering
+\caption{Planned comparison between the best radiomics-only models and the hybrid radiomics-clinical model. Replace TBD values after clinical-augmented results are generated.}
+\label{tab:hybrid}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lcccccc}
+\toprule
+Model & Feature set & AUROC & AUPRC & Sensitivity & Specificity & Brier score \\
+\midrule
+Best radiomics-only ML & Radiomics & 0.818 & 0.444 & 0.800 & 0.730 & 0.116 \\
+Best radiomics-only DL & Radiomics & 0.809 & 0.470 & 0.750 & 0.695 & 0.115 \\
+Hybrid model & Radiomics + clinical & TBD & TBD & TBD & TBD & TBD \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\section{Discussion}
+\textbf{What to include:} Interpret the main findings. Discuss why classical ML may remain competitive for radiomics tabular data, especially with limited sample size and high-dimensional engineered features. Discuss why deep tabular models may still be useful, for example for nonlinear feature interactions, calibration, or future multimodal extensions. Explain the expected value of adding clinical variables and how this aligns with clinical decision-making.
+
+\subsection{Clinical Implications}
+\textbf{What to include:} Explain how a calibrated csPCa risk model could support biopsy decisions, triage, second reading, or risk stratification. Discuss which metric matters most clinically, such as sensitivity for avoiding missed csPCa or specificity for reducing unnecessary biopsies.
+
+\subsection{Comparison with Prior Literature}
+\textbf{What to include:} Compare the observed AUROC/AUPRC and calibration behavior with prior prostate MRI radiomics studies. Discuss differences in cohort size, segmentation, MRI sequences, validation design, and use of clinical variables.
+
+\subsection{Strengths}
+\textbf{What to include:} Highlight aligned ML and DL evaluation, grouped folds, leakage-safe feature selection, out-of-fold predictions, patient-level bootstrap confidence intervals, probability calibration, decision-curve analysis, and interpretability.
+
+\subsection{Limitations}
+\textbf{What to include:} Discuss retrospective design, single-center or multi-center limitations depending on the actual cohort, segmentation variability, class imbalance, possible scanner/protocol heterogeneity, lack of external validation if applicable, and incomplete hybrid clinical results in the current repository.
+
+\subsection{Future Work}
+\textbf{What to include:} Mention external validation, prospective evaluation, integration of lesion-level imaging, richer clinical variables, dual-branch radiomics-clinical architectures, automated segmentation uncertainty, and model deployment considerations.
+
+\section{Conclusion}
+\textbf{What to include:} Provide a concise conclusion. Suggested message: radiomics-only classical ML and deep tabular models achieved comparable discrimination for csPCa detection on multiparametric MRI, with Random Forest currently providing the strongest AUROC and Transformer the strongest AUPRC among available radiomics-only results. The planned or preliminary hybrid radiomics-clinical model should be emphasized as the next step if it consistently improves performance.
+
+\section*{Data Availability}
+\textbf{What to include:} State whether imaging data, radiomics features, clinical variables, and trained models can be shared. If patient-level data cannot be shared, explain privacy/ethics restrictions and provide availability conditions.
+
+\section*{Code Availability}
+\textbf{What to include:} Reference the repository, CLI workflow, configuration files, and result folders. Mention that experiments were run using versioned YAML configurations and the \texttt{prostate-radiomics} command-line interface.
+
+\section*{Ethics Approval}
+\textbf{What to include:} Add institutional review board approval, consent waiver, informed consent statement, and data governance details as applicable.
+
+\section*{Author Contributions}
+\textbf{What to include:} Use a standard contribution taxonomy if required by the journal: conceptualization, data curation, methodology, software, validation, formal analysis, writing, supervision, and funding acquisition.
+
+\section*{Funding}
+\textbf{What to include:} Add grant numbers, institutional funding, or state that no specific funding was received.
+
+\section*{Conflicts of Interest}
+\textbf{What to include:} Declare any financial or non-financial competing interests.
+
+\bibliographystyle{unsrt}
+\bibliography{references}
+
+\end{document}

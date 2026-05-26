@@ -39,3 +39,15 @@ train/radiomics/1_extract_radiomics/voxel_extraction/results/
 !artifacts/radiomics/features_dwi_gland.csv
 !artifacts/radiomics/features_t2_full.csv
 !artifacts/radiomics/features_t2_gland.csv
+
+# Additional generated datasets and local reports
+artifacts/*.csv
+artifacts/clinical/
+artifacts/radiomics_lesion/
+src/prostate_radiomics_ml.egg-info/
+notebooks/
+
+# Keep canonical cohort manifest versionable.
+!artifacts/data.csv
+artifacts/**/*.log
+

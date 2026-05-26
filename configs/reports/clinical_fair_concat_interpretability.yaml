@@ -1,0 +1,27 @@
+interpretability:
+  csv: artifacts/radiomics/concatenated_data/features_all_gland_clinical.csv
+  data_pre: artifacts/radiomics
+  predefined_folds_json: results/radiomics/picai_nnunet_5folds.json
+  shared_feature_folds_json: results/radiomics/clinical_fair_comparison/feature_plans/radiomics_plus_clinical_feature_plan.json
+  predefined_fold_id_type: sample_id
+  ml_results_csv: results/radiomics/clinical_fair_comparison/ml/most_discriminant/clinical/clinical_fair_concat_ml_top3_tuned_calibrated/results_features_all_gland_clinical_most_discriminant.csv
+  ml_predictions_csv: results/radiomics/clinical_fair_comparison/ml/most_discriminant/clinical/clinical_fair_concat_ml_top3_tuned_calibrated/predictions_features_all_gland_clinical_most_discriminant.csv
+  ml_oof_csv: results/radiomics/clinical_fair_comparison/ml/most_discriminant/clinical/clinical_fair_concat_ml_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_clinical_most_discriminant.csv
+  ml_classifier:
+    - Random Forest
+    - LightGBM
+    - Gradient Boosting
+  top_k_ml: 3
+  dl_manifest_json: results/radiomics/clinical_fair_comparison/deep_concat/clinical_fair_concat_5fold_suite_manifest.json
+  outdir: results/radiomics/clinical_fair_comparison/benchmarks/concat_with_interpretability
+  classification_threshold: 0.5
+  permutation_repeats: 20
+  permutation_seed: 42
+  n_bootstrap: 1000
+  bootstrap_seed: 42
+  n_permutation_tests: 1000
+  top_features: 20
+  max_native_samples: 200
+  ig_steps: 64
+  reuse_existing_interpretability: true
+  skip_case_level_stats: true

@@ -1,26 +1,16 @@
 # Workflow
 
-The recommended workflow is:
+The recommended workflow is now the PI-CAI 1500 pipeline in `picai1500_corr`.
 
-1. Extract radiomics features from the cohort manifest.
-2. Concatenate modality-specific feature tables.
-3. Optionally add curated clinical variables for radiomics+clinical experiments.
-4. Train classical models on grouped folds.
-5. Train deep tabular models on the same fold plan and feature subsets.
-6. Compare out-of-fold predictions with the reduced clinical report.
-7. Run interpretability only for finalist models.
+1. Build or reuse the gland-level radiomics feature table.
+2. Export and validate the fixed 5-fold PI-CAI split for 1500 samples.
+3. Train calibrated radiomics-only ML and save the shared feature plan.
+4. Train radiomics-only deep tabular models on the same folds/features.
+5. Prepare clinical-only and radiomics+clinical tables.
+6. Train clinical-only, concatenated, and dual-branch model families.
+7. Build thresholded reports, interpretability, and publication outputs.
 
-## 1. Extraction
-
-```bash
-prostate-radiomics extract --dry-run
-```
-
-The extraction command currently delegates to the historical PyRadiomics script
-under `train/radiomics/1_extract_radiomics/`. This keeps extraction behavior
-stable while the rest of the workflow is modularized.
-
-## 2. Build Features
+## 1. Build Radiomics Features
 
 ```bash
 prostate-radiomics build-features \
@@ -33,70 +23,77 @@ prostate-radiomics build-features \
 Shape features are kept from only one modality to avoid duplicated shape
 information across T2, ADC, and DWI.
 
-## 3. Optional Clinical Variables
+## 2. Submit The Main Pipeline
 
 ```bash
-prostate-radiomics add-clinical \
-  --config configs/experiments/clinical_augmented_5fold.yaml
+./run.sh
 ```
 
-The clinical table must contain `patient_id` and `study_id`. If it contains a
-`label` column, labels are checked against the radiomics table before merging.
-Clinical features are prefixed with `clinical_` so they can be separated in
-feature selection and interpretability outputs.
+This submits the active SLURM sequence with dependencies. To inspect the order:
 
-## 4. Classical Models
+```bash
+./run.sh list
+```
+
+## 3. Radiomics-Only Models
 
 ```bash
 prostate-radiomics train-classical \
-  --config configs/experiments/classical_final_top3_tuned_5fold.yaml
+  --config configs/experiments/picai1500_corr/classical_radiomics_only_ml.yaml
+
+prostate-radiomics train-deep \
+  --config configs/experiments/picai1500_corr/deep_radiomics_only.yaml
+
+prostate-radiomics postprocess-deep \
+  --config configs/experiments/picai1500_corr/deep_threshold_postprocess.yaml
 ```
 
-The command delegates to the existing leakage-safe classical training script.
-The config records fold source, feature selection settings, bootstrap settings,
-and tuning options in one versioned file.
+The classical run validates the 1500-case split, selects the final top ML model
+families, and writes the shared fold feature plan consumed by the deep run.
 
-## 5. Deep Tabular Models
+## 4. Clinical And Combined Models
+
+The clinical preparation script builds three current inputs:
+
+- `results/radiomics/picai1500_corr/features/clinical_features.csv`
+- `results/radiomics/picai1500_corr/features/features_clinical_only.csv`
+- `results/radiomics/picai1500_corr/features/features_all_gland_clinical.csv`
+
+Then run:
 
 ```bash
+prostate-radiomics train-classical \
+  --config configs/experiments/picai1500_corr/clinical_only_ml.yaml
+
+prostate-radiomics train-classical \
+  --config configs/experiments/picai1500_corr/concat_ml.yaml
+
 prostate-radiomics train-deep \
-  --config configs/experiments/deep_5fold.yaml
+  --config configs/experiments/picai1500_corr/clinical_only_deep.yaml
+
+prostate-radiomics train-deep \
+  --config configs/experiments/picai1500_corr/concat_deep.yaml
+
+prostate-radiomics train-deep \
+  --config configs/experiments/picai1500_corr/dual_deep.yaml
 ```
 
-Deep models should reuse the shared fold feature plan exported by the classical
-pipeline so ML and DL comparisons are aligned. In the current configs, deep
-probabilities are calibrated post hoc on the inner validation split of each
-outer fold before the OOF file is written.
-
-For clinical-plus-radiomics dual-branch models, use:
-
-```bash
-prostate-radiomics train-deep \
-  --config configs/experiments/clinical_augmented_dual_deep_5fold.yaml
-```
-
-## 6. Clinical Comparison
+## 5. Reports And Interpretability
 
 ```bash
 prostate-radiomics compare \
-  --prediction "SVM=path/to/ml_oof.csv" \
-  --prediction "Transformer=path/to/dl_oof.csv" \
-  --outdir results/radiomics/clinical_comparison
-```
+  --config configs/reports/picai1500_corr/clinical_comparison_thresholded.yaml
 
-The comparison aligns shared sample IDs, verifies labels match, computes primary
-clinical metrics, and writes one compact report with ROC, PR, calibration,
-decision-curve, probability-distribution, metric-heatmap, confusion-matrix, and
-bootstrap ranking figures. Confidence intervals are bootstrapped at the patient
-level when `patient_id` is present in the prediction files.
-
-## 7. Interpretability
-
-```bash
 prostate-radiomics interpret \
-  --config configs/reports/full_interpretability.yaml
+  --config configs/reports/picai1500_corr/radiomics_only_interpretability.yaml
 ```
 
-This delegates to the final ML-vs-DL benchmark script and generates model-level
-SHAP/native, integrated-gradient/native, and permutation-importance outputs.
-Use `--dry-run` first on HPC to confirm all paths resolve.
+The full report job also runs the clinical-only, concatenated, and dual
+interpretability configs, then builds:
+
+```text
+results/radiomics/picai1500_corr/publication_report/
+```
+
+Use `RUN_INTERPRETABILITY=0` with report scripts when you only need to rebuild
+metrics/tables from existing interpretability outputs.

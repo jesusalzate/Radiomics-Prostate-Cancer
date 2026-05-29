@@ -1,0 +1,26 @@
+train_deep:
+  csv: features_all_gland.csv
+  data_pre: artifacts/radiomics
+  output_dir: results/radiomics/deep_tabular_models_updated
+  run_prefix: more_features_v2_final_5fold
+  architectures:
+    - transformer
+    - capsnet
+    - transformer_capsnet
+  feature_selection: most_discriminant
+  predefined_folds_json: results/radiomics/picai_nnunet_5folds.json
+  shared_feature_folds_json: results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_feature_prep/shared_fold_feature_plan.json
+  predefined_fold_id_type: sample_id
+  min_features: 30
+  max_features_cap: 100
+  samples_per_feature: 15
+  minority_samples_per_feature: 5
+  fdr_alpha: 0.05
+  correlation_threshold: 0.95
+  selection_n_jobs: 7
+  batch_size: 16
+  epochs: 300
+  patience: 50
+  threshold_strategy: validation_youden
+  probability_calibration: sigmoid
+  fold_validation_mode: inner_val

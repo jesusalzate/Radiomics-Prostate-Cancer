@@ -1,0 +1,27 @@
+interpretability:
+  csv: results/radiomics/picai1500_corr/features/features_clinical_only.csv
+  data_pre: artifacts/radiomics
+  predefined_folds_json: results/radiomics/picai1500_corr/picai_5folds.json
+  shared_feature_folds_json: results/radiomics/picai1500_corr/feature_plans/clinical_only_feature_plan.json
+  predefined_fold_id_type: sample_id
+  ml_results_csv: results/radiomics/picai1500_corr/ml/clinical_only/all/only/picai1500_clinical_only_ml/results_features_clinical_only_all.csv
+  ml_predictions_csv: results/radiomics/picai1500_corr/ml/clinical_only/all/only/picai1500_clinical_only_ml/predictions_features_clinical_only_all.csv
+  ml_oof_csv: results/radiomics/picai1500_corr/ml/clinical_only/all/only/picai1500_clinical_only_ml/oof_predictions_aggregated_features_clinical_only_all.csv
+  ml_classifier:
+    - Random Forest
+    - LightGBM
+    - Gradient Boosting
+  top_k_ml: 3
+  dl_manifest_json: results/radiomics/picai1500_corr/dl/clinical_only/picai1500_clinical_only_5fold_suite_manifest.json
+  outdir: results/radiomics/picai1500_corr/benchmarks/clinical_only_with_interpretability
+  classification_threshold: 0.5
+  permutation_repeats: 20
+  permutation_seed: 42
+  n_bootstrap: 1000
+  bootstrap_seed: 42
+  n_permutation_tests: 1000
+  top_features: 20
+  max_native_samples: 200
+  ig_steps: 64
+  reuse_existing_interpretability: true
+  skip_case_level_stats: true

@@ -1,51 +1,53 @@
-# HPC Run Scripts
+# PI-CAI 1500 HPC Scripts
 
-These scripts reproduce the refactored workflow on SLURM.
+This folder now contains only the SLURM jobs for the current PI-CAI 1500
+experiment. Older PI-CAI 1295 and intermediate fair-comparison jobs were moved
+to `archive/scripts/hpc/`.
 
-## Radiomics-only fair benchmark
+## Standard Order
 
-1. `01_ml_from_scratch.sh`
-2. `02_dl_from_scratch.sh`
-3. `03_compare_interpret.sh`
+Submit the complete current workflow from the repository root:
 
-## Clinical fair comparison
+```bash
+./run.sh
+```
 
-Run these after the radiomics-only fair benchmark exists:
+That submits the following jobs with `afterok` dependencies:
 
-1. `04_prepare_clinical_fair_inputs.sh`
-2. `05_clinical_ml_fair.sh`
-3. `06_clinical_dl_fair.sh`
-4. `07_clinical_compare_interpret.sh`
+1. `10_picai1500_radiomics_ml.sh`
+2. `11_picai1500_radiomics_dl.sh`
+3. `12_picai1500_clinical_prep.sh`
+4. `13_picai1500_clinical_ml.sh`
+5. `14_picai1500_clinical_dl.sh`
+6. `15_picai1500_reports.sh`
 
-The clinical flow creates:
+To inspect the order without submitting:
 
-- `artifacts/clinical/clinical_features.csv`
-- `artifacts/clinical/features_clinical_only.csv`
-- `artifacts/radiomics/concatenated_data/features_all_gland_clinical.csv`
-- `results/radiomics/clinical_fair_comparison/`
+```bash
+./run.sh list
+```
 
-Clinical variables are `patient_age`, `psa`, `psad`, and `prostate_volume`. Missing values are retained in the CSV and imputed inside each training fold.
+## Optional Jobs
 
-Each script accepts the following environment overrides:
+- `16_picai1500_reports_resume_dual.sh`: resume dual-branch interpretability and
+  rebuild the publication report.
+- `17_picai1500_dual_transformer_longtrain.sh`: train the longer dual
+  Transformer variant and compare it with the baseline dual Transformer.
+- `18_picai1500_total_energy_overlay.sh`: render one TotalEnergy voxel overlay.
+
+## Environment Overrides
+
+All jobs accept:
 
 - `REPO_DIR`
 - `PYTHON_MODULE`
 - `VENV_ACTIVATE`
 
-Additional overrides:
+Report jobs also accept:
 
-- `CLEAN_RESULTS=1` for `01_ml_from_scratch.sh`
-- `CLINICAL_CSV=/path/to/clinical.csv` for the legacy `04_clinical_when_ready.sh`
+- `RUN_INTERPRETABILITY=0` to rebuild metrics/reports without rerunning native
+  interpretability.
+- `MAX_NATIVE_SAMPLES` and `IG_STEPS` for dual-branch resume jobs.
 
-Example:
-
-```bash
-sbatch scripts/hpc/01_ml_from_scratch.sh
-sbatch scripts/hpc/02_dl_from_scratch.sh
-sbatch scripts/hpc/03_compare_interpret.sh
-
-sbatch scripts/hpc/04_prepare_clinical_fair_inputs.sh
-sbatch scripts/hpc/05_clinical_ml_fair.sh
-sbatch scripts/hpc/06_clinical_dl_fair.sh
-sbatch scripts/hpc/07_clinical_compare_interpret.sh
-```
+The current experiment writes under `results/radiomics/picai1500_corr/`, which
+is ignored by Git.

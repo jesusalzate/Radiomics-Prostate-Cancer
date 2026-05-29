@@ -1,77 +1,59 @@
-# HPC Usage
+# HPC Workflow
 
-The old `run.sh` and `run_dl.sh` files mixed several historical commands. Prefer
-small SLURM scripts that call one CLI command and one YAML config.
+The active SLURM workflow is the PI-CAI 1500 experiment.
 
-## Classical ML
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=rad-classical
-#SBATCH --partition=long
-#SBATCH --cpus-per-task=32
-#SBATCH --mem=150G
-#SBATCH --output=logs/rad-classical.out
-
-module load Python/3.11.5-GCCcore-11.2.0
-source /projects/ceib/python_enviroments/radiomics_venv/bin/activate
-export PYTHONUNBUFFERED=1
-export MPLBACKEND=Agg
-
-prostate-radiomics train-classical \
-  --config configs/experiments/classical_final_top3_tuned_5fold.yaml
-```
-
-## Deep Tabular
+## Submit Everything
 
 ```bash
-#!/bin/bash
-#SBATCH --job-name=rad-deep
-#SBATCH --partition=gpuceib
-#SBATCH --cpus-per-task=7
-#SBATCH --mem=50G
-#SBATCH --gres=gpu:1
-#SBATCH --output=logs/rad-deep.out
-
-module load Python/3.11.5-GCCcore-11.2.0
-source /projects/ceib/python_enviroments/radiomics_venv/bin/activate
-export PYTHONUNBUFFERED=1
-export MPLBACKEND=Agg
-
-prostate-radiomics train-deep \
-  --config configs/experiments/deep_5fold.yaml
+./run.sh
 ```
 
-## Dry Runs
-
-Use `--dry-run` before submitting expensive jobs:
+`run.sh` submits the main jobs with `afterok` dependencies so each step starts
+only after the previous step finishes successfully. Use:
 
 ```bash
-prostate-radiomics train-classical \
-  --config configs/experiments/classical_final_top3_tuned_5fold.yaml \
-  --dry-run
+./run.sh list
 ```
 
-## Interpretability
+to print the job order without submitting.
 
-Interpretability is more expensive than the reduced report because it refits or
-loads finalist models and computes SHAP/native, integrated-gradient/native, and
-permutation-importance outputs.
+## Manual Submission
 
 ```bash
-#!/bin/bash
-#SBATCH --job-name=rad-interpret
-#SBATCH --partition=gpuceib
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=80G
-#SBATCH --gres=gpu:1
-#SBATCH --output=logs/rad-interpret.out
-
-module load Python/3.11.5-GCCcore-11.2.0
-source /projects/ceib/python_enviroments/radiomics_venv/bin/activate
-export PYTHONUNBUFFERED=1
-export MPLBACKEND=Agg
-
-prostate-radiomics interpret \
-  --config configs/reports/full_interpretability.yaml
+sbatch scripts/hpc/10_picai1500_radiomics_ml.sh
+sbatch scripts/hpc/11_picai1500_radiomics_dl.sh
+sbatch scripts/hpc/12_picai1500_clinical_prep.sh
+sbatch scripts/hpc/13_picai1500_clinical_ml.sh
+sbatch scripts/hpc/14_picai1500_clinical_dl.sh
+sbatch scripts/hpc/15_picai1500_reports.sh
 ```
+
+Submit manually only when you already know the required upstream outputs exist.
+
+## Optional Scripts
+
+- `16_picai1500_reports_resume_dual.sh`: resume dual interpretability and rebuild
+  the publication report.
+- `17_picai1500_dual_transformer_longtrain.sh`: train and compare the long
+  dual-Transformer run.
+- `18_picai1500_total_energy_overlay.sh`: render one voxel-level TotalEnergy
+  overlay. It requires `PATIENT_ID` and `STUDY_ID`.
+
+Example:
+
+```bash
+PATIENT_ID=11285 STUDY_ID=1001308 sbatch scripts/hpc/18_picai1500_total_energy_overlay.sh
+```
+
+## Environment
+
+Each script accepts:
+
+- `REPO_DIR`
+- `PYTHON_MODULE`
+- `VENV_ACTIVATE`
+
+Report scripts also accept `RUN_INTERPRETABILITY=0` for metric/report rebuilds
+without rerunning native interpretability.
+
+All outputs are written under `results/radiomics/picai1500_corr/`.

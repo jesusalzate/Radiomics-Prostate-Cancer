@@ -1,0 +1,79 @@
+add_clinical:
+  radiomics_csv: artifacts/radiomics/concatenated_data/features_all_gland.csv
+  clinical_csv: artifacts/clinical/clinical_features.csv
+  output: artifacts/radiomics/concatenated_data/features_all_gland_clinical.csv
+  id_columns:
+    - patient_id
+    - study_id
+  label_column: label
+  how: inner
+  categorical: one_hot
+  keep_missing: false
+  drop_columns:
+    - t2w_path
+    - adc_path
+    - hbv_path
+    - csPCa_lesion_delineation_path
+    - whole_gland_path
+    - zonal_path
+    - case_ISUP
+    - case_csPCa
+    - human_delineation
+    - AI_delineation
+    - height
+    - width
+    - depth
+    - lesion_value
+    - mri_date
+
+train_classical:
+  csv: features_all_gland_clinical.csv
+  data_pre: artifacts/radiomics
+  results_base: results/radiomics
+  experiment_name: clinical_augmented_final_5fold_top3_tuned
+  feature_strategy: most_discriminant
+  predefined_folds_json: results/radiomics/picai_nnunet_5folds.json
+  predefined_fold_id_type: sample_id
+  model_summary_csv: results/radiomics/most_discriminant/gland/more_features_v2_rank_5x10/aggregated_performance/summary_metrics.csv
+  top_k_models: 3
+  classification_threshold: 0.5
+  bootstrap_iterations: 1000
+  ci_level: 0.95
+  min_features: 30
+  max_features_cap: 100
+  samples_per_feature: 15
+  minority_samples_per_feature: 5
+  fdr_alpha: 0.05
+  correlation_threshold: 0.95
+  selection_n_jobs: 7
+  tune: true
+  tune_n_iter: 20
+  tune_inner_splits: 3
+  tune_search_n_jobs: 1
+  calculate_differences: true
+
+train_deep:
+  csv: features_all_gland_clinical.csv
+  data_pre: artifacts/radiomics
+  output_dir: results/radiomics/deep_tabular_models_clinical_augmented
+  run_prefix: clinical_augmented_final_5fold
+  architectures:
+    - transformer
+    - capsnet
+    - transformer_capsnet
+  feature_selection: most_discriminant
+  predefined_folds_json: results/radiomics/picai_nnunet_5folds.json
+  shared_feature_folds_json: results/radiomics/most_discriminant/gland/clinical_augmented_final_5fold_feature_prep/shared_fold_feature_plan.json
+  predefined_fold_id_type: sample_id
+  min_features: 30
+  max_features_cap: 100
+  samples_per_feature: 15
+  minority_samples_per_feature: 5
+  fdr_alpha: 0.05
+  correlation_threshold: 0.95
+  selection_n_jobs: 7
+  batch_size: 16
+  epochs: 300
+  patience: 50
+  threshold_strategy: youden_val
+  probability_calibration: sigmoid

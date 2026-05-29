@@ -1,0 +1,27 @@
+train_deep:
+  csv: results/radiomics/picai1500_corr/features/features_all_gland_clinical.csv
+  data_pre: artifacts/radiomics
+  output_dir: results/radiomics/picai1500_corr/dl/concat
+  run_prefix: picai1500_concat_5fold
+  architectures:
+    - transformer
+    - capsnet
+    - transformer_capsnet
+  feature_selection: most_discriminant
+  predefined_folds_json: results/radiomics/picai1500_corr/picai_5folds.json
+  shared_feature_folds_json: results/radiomics/picai1500_corr/feature_plans/radiomics_plus_clinical_feature_plan.json
+  predefined_fold_id_type: sample_id
+  min_features: 30
+  max_features_cap: 100
+  samples_per_feature: 15
+  minority_samples_per_feature: 5
+  fdr_alpha: 0.05
+  correlation_threshold: 0.95
+  selection_n_jobs: 7
+  batch_size: 16
+  epochs: 300
+  patience: 50
+  threshold_strategy: validation_youden
+  probability_calibration: sigmoid
+  fold_validation_mode: inner_val
+  final_refit_on_outer_train: false

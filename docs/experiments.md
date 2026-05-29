@@ -1,197 +1,88 @@
-# Experiment Commands
+# Current Experiment
 
-This page maps the historical `run.sh` and `run_dl.sh` experiments to the
-unified CLI. Run commands from the repository root after installing the package.
+The active experiment is `picai1500_corr`: a fixed 5-fold PI-CAI 1500 benchmark
+with radiomics-only, clinical-only, concatenated radiomics+clinical, and
+dual-branch radiomics+clinical models.
 
-For SLURM-ready end-to-end runs, use:
+Historical PI-CAI 1295 and intermediate fair-comparison configs were moved to
+`archive/configs/`.
 
-- [scripts/hpc/01_ml_from_scratch.sh](/Users/alejo/Documents/Study/PhD/Prostate-Radiomics-ML/scripts/hpc/01_ml_from_scratch.sh)
-- [scripts/hpc/02_dl_from_scratch.sh](/Users/alejo/Documents/Study/PhD/Prostate-Radiomics-ML/scripts/hpc/02_dl_from_scratch.sh)
-- [scripts/hpc/03_compare_interpret.sh](/Users/alejo/Documents/Study/PhD/Prostate-Radiomics-ML/scripts/hpc/03_compare_interpret.sh)
-- [scripts/hpc/04_clinical_when_ready.sh](/Users/alejo/Documents/Study/PhD/Prostate-Radiomics-ML/scripts/hpc/04_clinical_when_ready.sh)
+## Inputs
 
-## 1. Export PI-CAI 5-Fold Split
+- Cohort manifest: `artifacts/data.csv`
+- Source radiomics tables: `artifacts/radiomics/features_*_{gland,full}.csv`
+- Main feature table: `artifacts/radiomics/concatenated_data/features_all_gland.csv`
+- Ranking seed used to select the final top ML families:
+  `artifacts/radiomics/model_selection/picai1295_rank_5x10_summary_metrics.csv`
 
-This is still a legacy utility because it only creates the fold manifest:
+The current workflow validates that the PI-CAI split and feature tables contain
+1500 unique `sample_id` values before training proceeds.
 
-```bash
-python train/radiomics/2_modeling/export_picai_fold_assignments.py \
-  --source picai_nnunet \
-  --output results/radiomics/picai_nnunet_5folds.json \
-  --identifier_type sample_id
-```
-
-## 2. Radiomics-Only Feature Prep
+## SLURM Entry Point
 
 ```bash
-prostate-radiomics train-classical \
-  --config configs/experiments/classical_feature_prep_5fold.yaml
+./run.sh
 ```
 
-This writes the shared fold feature plan used by both ML and DL finalist runs.
+This submits:
 
-## 3. Radiomics-Only 5x10 Ranking
+1. `scripts/hpc/10_picai1500_radiomics_ml.sh`
+2. `scripts/hpc/11_picai1500_radiomics_dl.sh`
+3. `scripts/hpc/12_picai1500_clinical_prep.sh`
+4. `scripts/hpc/13_picai1500_clinical_ml.sh`
+5. `scripts/hpc/14_picai1500_clinical_dl.sh`
+6. `scripts/hpc/15_picai1500_reports.sh`
 
-```bash
-prostate-radiomics train-classical \
-  --config configs/experiments/classical_rank_5x10.yaml
+Optional follow-up scripts:
+
+- `scripts/hpc/16_picai1500_reports_resume_dual.sh`
+- `scripts/hpc/17_picai1500_dual_transformer_longtrain.sh`
+- `scripts/hpc/18_picai1500_total_energy_overlay.sh`
+
+## Config Map
+
+Radiomics-only:
+
+- ML: `configs/experiments/picai1500_corr/classical_radiomics_only_ml.yaml`
+- DL: `configs/experiments/picai1500_corr/deep_radiomics_only.yaml`
+- DL threshold postprocess:
+  `configs/experiments/picai1500_corr/deep_threshold_postprocess.yaml`
+- Interpretability:
+  `configs/reports/picai1500_corr/radiomics_only_interpretability.yaml`
+
+Clinical and combined:
+
+- Clinical-only ML: `configs/experiments/picai1500_corr/clinical_only_ml.yaml`
+- Clinical-only DL: `configs/experiments/picai1500_corr/clinical_only_deep.yaml`
+- Concatenated ML: `configs/experiments/picai1500_corr/concat_ml.yaml`
+- Concatenated DL: `configs/experiments/picai1500_corr/concat_deep.yaml`
+- Dual-branch DL: `configs/experiments/picai1500_corr/dual_deep.yaml`
+- Long-train dual Transformer:
+  `configs/experiments/picai1500_corr/dual_transformer_longtrain.yaml`
+
+Reports:
+
+- Thresholded clinical comparison:
+  `configs/reports/picai1500_corr/clinical_comparison_thresholded.yaml`
+- Clinical-only interpretability:
+  `configs/reports/picai1500_corr/clinical_only_interpretability.yaml`
+- Concatenated interpretability:
+  `configs/reports/picai1500_corr/concat_interpretability.yaml`
+- Dual interpretability:
+  `configs/reports/picai1500_corr/dual_interpretability.yaml`
+
+## Outputs
+
+All generated outputs are ignored by Git and live under:
+
+```text
+results/radiomics/picai1500_corr/
 ```
 
-The ranking config reproduces the repeated classical benchmark from `run.sh`
-and writes the summary CSV used to select the top ML models.
+Important subdirectories:
 
-## 4. Radiomics-Only Final Top-3 Tuned ML
-
-```bash
-prostate-radiomics train-classical \
-  --config configs/experiments/classical_final_top3_tuned_5fold.yaml
-```
-
-For a calibrated final ML benchmark with train-only threshold selection:
-
-```bash
-prostate-radiomics train-classical \
-  --config configs/experiments/classical_final_top3_tuned_5fold_calibrated.yaml
-```
-
-This run writes calibrated OOF probabilities plus both:
-
-- `prediction_fixed_0_5`
-- `prediction_validation_youden`
-
-## 5. Radiomics-Only Deep Suite
-
-```bash
-prostate-radiomics train-deep \
-  --config configs/experiments/deep_5fold.yaml
-```
-
-The deep suite uses the PI-CAI folds and the shared feature plan from the
-feature-prep run so fold membership and selected features stay aligned. The
-current deep configs also apply post-hoc sigmoid calibration on the inner
-validation split of each outer fold before writing OOF probabilities.
-
-If `shared_fold_feature_plan.json` is missing, run the feature-prep classical
-config first:
-
-```bash
-prostate-radiomics train-classical \
-  --config configs/experiments/classical_feature_prep_5fold.yaml
-```
-
-If the deep job is already running or already finished, and you want the pooled
-OOF comparison for both `fixed_0.5` and fold-specific `validation_youden`
-thresholds without retraining, postprocess the suite manifest:
-
-```bash
-prostate-radiomics postprocess-deep \
-  --config configs/experiments/deep_threshold_postprocess.yaml
-```
-
-Or point directly to one architecture run:
-
-```bash
-prostate-radiomics postprocess-deep \
-  --run-dir results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_transformer
-```
-
-This writes a compact threshold audit from the already-saved `test_predictions.csv`
-and `threshold_diagnostics.json` files in each fold.
-
-## 6. Reduced Clinical Report
-
-```bash
-prostate-radiomics compare \
-  --config configs/reports/clinical_comparison.yaml
-```
-
-Edit `configs/reports/clinical_comparison.yaml` with the exact OOF prediction
-paths to compare. The default report generates only the canonical scientific
-figures.
-
-If you want a thresholded comparison using precomputed fold-wise predictions
-such as `prediction_validation_youden`, use:
-
-```bash
-prostate-radiomics compare \
-  --config configs/reports/clinical_comparison_thresholded.yaml \
-  --prediction "Random Forest=results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv" \
-  --prediction "LightGBM=results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv" \
-  --prediction "Gradient Boosting=results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv" \
-  --prediction "transformer=results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_transformer/threshold_postprocess/cv_oof_predictions_thresholds.csv" \
-  --prediction "capsnet=results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_capsnet/threshold_postprocess/cv_oof_predictions_thresholds.csv" \
-  --prediction "transformer_capsnet=results/radiomics/deep_tabular_models_updated/more_features_v2_final_5fold_transformer_capsnet/threshold_postprocess/cv_oof_predictions_thresholds.csv"
-```
-
-That report still uses calibrated probabilities for AUROC/AUPRC/Brier, but uses
-the saved binary predictions from `prediction_validation_youden` for
-sensitivity, specificity, balanced accuracy, F1, MCC, and confusion matrices.
-
-## 7. Full Interpretability
-
-```bash
-prostate-radiomics interpret \
-  --config configs/reports/full_interpretability.yaml
-```
-
-Use this after finalist ML and DL outputs exist. It is the replacement for
-running `6_compare_final_models_and_interpretability.py` by hand without
-`--skip_interpretability`.
-
-## 8. Clinical-Augmented Experiment
-
-Prepare a clinical CSV, then build the combined feature table:
-
-```bash
-prostate-radiomics add-clinical \
-  --config configs/experiments/clinical_augmented_5fold.yaml
-```
-
-Run a clinical-augmented feature plan and finalist ML benchmark:
-
-```bash
-prostate-radiomics train-classical \
-  --config configs/experiments/clinical_augmented_feature_prep_5fold.yaml
-
-prostate-radiomics train-classical \
-  --config configs/experiments/clinical_augmented_final_top3_tuned_5fold.yaml
-```
-
-Then run the clinical-augmented deep suite:
-
-```bash
-prostate-radiomics train-deep \
-  --config configs/experiments/clinical_augmented_5fold.yaml
-```
-
-## 9. Clinical-Augmented Dual-Branch Deep Suite
-
-For models with a dedicated clinical branch and a dedicated radiomics branch:
-
-```bash
-prostate-radiomics train-deep \
-  --config configs/experiments/clinical_augmented_dual_deep_5fold.yaml
-```
-
-Registered dual architectures:
-
-- `dual_transformer`
-- `dual_capsnet`
-- `dual_transformer_capsnet`
-
-These architectures expect `clinical_*` columns in the feature table. If the
-shared feature plan selected no clinical variables for a fold, the trainer falls
-back to all available `clinical_*` columns for that dual branch.
-
-For a fair comparison, keep the same PI-CAI fold JSON and compare:
-
-- radiomics-only ML
-- radiomics-only DL
-- radiomics+clinical ML
-- radiomics+clinical DL
-
-using the reduced report and the same bootstrap settings.
-
-After a clinical or dual-branch deep suite finishes, the same postprocess
-command can be applied to its manifest to compare `fixed_0.5` versus
-`validation_youden` without another training pass.
+- `ml/`: calibrated classical ML outputs and shared feature plans.
+- `dl/`: deep tabular suites and threshold postprocessing.
+- `features/`: clinical-only and radiomics+clinical feature tables.
+- `benchmarks/`: report-ready metrics and interpretability outputs.
+- `publication_report/`: grouped tables and figures for manuscript use.

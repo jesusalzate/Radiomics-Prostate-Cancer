@@ -1,105 +1,70 @@
 # Clinical Features
 
-The clinical workflow imports the useful part of the separate Colab-style
-experiment: merge clinical variables with radiomics features by `patient_id` and
-`study_id`, remove leakage-prone metadata, and compare radiomics-only against
-radiomics+clinical models on the same folds.
+The current clinical workflow is part of the PI-CAI 1500 experiment. It creates
+clinical-only and radiomics+clinical tables from `artifacts/data.csv` and the
+current gland radiomics feature table, then trains all model families on the
+same fixed folds.
 
-## Required Input
+## Variables
 
-Create a clinical CSV such as:
+The active clinical variables are:
 
-```text
-artifacts/clinical/clinical_features.csv
-```
+- `patient_age`
+- `psa`
+- `psad`
+- `prostate_volume`
 
-Required columns:
+They are written with a `clinical_` prefix in modeling tables. Missing values
+are retained in the CSV and imputed inside each training fold.
 
-- `patient_id`
-- `study_id`
+## Build Inputs
 
-Optional but recommended:
-
-- `label`
-
-All other non-dropped columns are treated as clinical variables. Numeric
-features are kept numeric. Categorical features are one-hot encoded and all
-clinical-derived feature names are prefixed with `clinical_`.
-
-## Default Dropped Columns
-
-The merge drops known path, target, and metadata columns by default:
-
-- image/mask paths such as `t2w_path`, `adc_path`, `hbv_path`,
-  `csPCa_lesion_delineation_path`, `whole_gland_path`, `zonal_path`
-- target-like or post-diagnosis columns such as `case_ISUP`, `case_csPCa`
-- delineation and geometry metadata such as `human_delineation`,
-  `AI_delineation`, `height`, `width`, `depth`, `lesion_value`
-- `mri_date`
-
-Override `drop_columns` in `configs/experiments/clinical_augmented_5fold.yaml`
-only after verifying a column is available at prediction time and is not a
-target proxy.
-
-## Build The Combined Table
+The standard SLURM step is:
 
 ```bash
-prostate-radiomics add-clinical \
-  --config configs/experiments/clinical_augmented_5fold.yaml
+sbatch scripts/hpc/12_picai1500_clinical_prep.sh
 ```
 
-Default output:
-
-```text
-artifacts/radiomics/concatenated_data/features_all_gland_clinical.csv
-```
-
-If the clinical CSV includes `label`, the command checks label consistency
-against the radiomics table and fails on mismatches.
-
-## Recommended Comparison
-
-Run radiomics-only and radiomics+clinical experiments with the same folds:
+It calls:
 
 ```bash
-prostate-radiomics train-classical \
-  --config configs/experiments/classical_feature_prep_5fold.yaml
-
-prostate-radiomics train-classical \
-  --config configs/experiments/classical_final_top3_tuned_5fold.yaml
-
-prostate-radiomics train-classical \
-  --config configs/experiments/clinical_augmented_feature_prep_5fold.yaml
-
-prostate-radiomics train-classical \
-  --config configs/experiments/clinical_augmented_final_top3_tuned_5fold.yaml
+python scripts/analysis/prepare_clinical_fair_inputs.py \
+  --radiomics-csv artifacts/radiomics/concatenated_data/features_all_gland.csv \
+  --clinical-source-csv artifacts/data.csv \
+  --radiomics-feature-plan results/radiomics/picai1500_corr/ml/radiomics_only/most_discriminant/gland/picai1500_radiomics_only_ml_top3_tuned_calibrated/shared_fold_feature_plan.json \
+  --clinical-output results/radiomics/picai1500_corr/features/clinical_features.csv \
+  --clinical-only-output results/radiomics/picai1500_corr/features/features_clinical_only.csv \
+  --merged-output results/radiomics/picai1500_corr/features/features_all_gland_clinical.csv
 ```
 
-For deep models:
+The script validates that every output has 1500 rows and 1500 unique
+`sample_id` values.
 
-```bash
-prostate-radiomics train-deep \
-  --config configs/experiments/deep_5fold.yaml
+## Model Families
 
-prostate-radiomics train-deep \
-  --config configs/experiments/clinical_augmented_5fold.yaml
+Clinical-only:
 
-prostate-radiomics train-deep \
-  --config configs/experiments/clinical_augmented_dual_deep_5fold.yaml
-```
+- `configs/experiments/picai1500_corr/clinical_only_ml.yaml`
+- `configs/experiments/picai1500_corr/clinical_only_deep.yaml`
 
-Then compare the OOF predictions with `prostate-radiomics compare`. The report
-will show whether clinical variables improve AUROC, AUPRC, calibration, Brier
-score, threshold utility, and error profile.
+Radiomics+clinical concatenation:
 
-## Dual-Branch Deep Models
+- `configs/experiments/picai1500_corr/concat_ml.yaml`
+- `configs/experiments/picai1500_corr/concat_deep.yaml`
+
+Radiomics+clinical dual branch:
+
+- `configs/experiments/picai1500_corr/dual_deep.yaml`
 
 The dual deep configurations treat `clinical_*` and radiomics features as
-different modalities:
+different modalities: one branch processes curated clinical variables, one
+branch processes radiomics, and fusion happens late in the network.
 
-- one branch processes curated clinical variables;
-- one branch processes radiomics;
-- fusion happens late in the network.
+## Reports
 
-This is useful when you want the model to preserve source-specific processing
-instead of treating every column as one homogeneous tabular vector.
+The final report compares radiomics-only, clinical-only, concatenated, and
+dual-branch outputs under:
+
+```text
+results/radiomics/picai1500_corr/publication_report/
+```

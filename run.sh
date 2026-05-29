@@ -1,130 +1,34 @@
-#!/bin/bash
-#SBATCH --job-name=RadiomicaPICAI
+#!/usr/bin/env bash
+set -euo pipefail
 
-#SBATCH --partition=long
+MODE="${1:-submit}"
 
-#SBATCH --cpus-per-task 32
+PIPELINE=(
+  scripts/hpc/10_picai1500_radiomics_ml.sh
+  scripts/hpc/11_picai1500_radiomics_dl.sh
+  scripts/hpc/12_picai1500_clinical_prep.sh
+  scripts/hpc/13_picai1500_clinical_ml.sh
+  scripts/hpc/14_picai1500_clinical_dl.sh
+  scripts/hpc/15_picai1500_reports.sh
+)
 
-#SBATCH --mem 150G
-
-#SBATCH --output=./RadiomicaPICAI.out
-
-
-module load Python/3.11.5-GCCcore-11.2.0 
-source /projects/ceib/python_enviroments/radiomics_venv/bin/activate
-
-export PYTHONUNBUFFERED=1
-export MPLBACKEND=Agg
-
-## Select Features
-# python train/radiomics/2_modeling/1_train_and_evaluate.py \
-#   --csv features_all_gland.csv \
-#   --data_pre artifacts/radiomics \
-#   --results_base results/radiomics \
-#   --experiment_name more_features_v2_final_5fold_feature_prep \
-#   --feature_strategy most_discriminant \
-#   --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
-#   --predefined_fold_id_type sample_id \
-#   --min_features 30 \
-#   --max_features_cap 100 \
-#   --samples_per_feature 15 \
-#   --minority_samples_per_feature 5 \
-#   --fdr_alpha 0.05 \
-#   --correlation_threshold 0.95 \
-#   --selection_n_jobs 32 \
-#   --prepare_shared_features_only
-
-## Train 50 folds
-# python train/radiomics/2_modeling/1_train_and_evaluate.py \
-#   --csv features_all_gland.csv \
-#   --data_pre artifacts/radiomics \
-#   --results_base results/radiomics \
-#   --experiment_name more_features_v2_rank_5x10 \
-#   --feature_strategy most_discriminant \
-#   --n_splits 5 \
-#   --n_repeats 10 \
-#   --bootstrap_iterations 1000 \
-#   --ci_level 0.95 \
-#   --classification_threshold 0.5 \
-#   --min_features 30 \
-#   --max_features_cap 100 \
-#   --samples_per_feature 15 \
-#   --minority_samples_per_feature 5 \
-#   --fdr_alpha 0.05 \
-#   --correlation_threshold 0.95 \
-#   --selection_n_jobs 32 \
-#   --calculate_differences
-
-# python train/radiomics/2_modeling/1_train_and_evaluate.py \
-#   --csv features_all_gland.csv \
-#   --data_pre artifacts/radiomics \
-#   --results_base results/radiomics \
-#   --experiment_name more_features_v2_rank_5x10 \
-#   --feature_strategy most_discriminant \
-#   --postprocess_only
-
-
-## Test with picai folds
-# python train/radiomics/2_modeling/1_train_and_evaluate.py \
-#   --csv features_all_gland.csv \
-#   --data_pre artifacts/radiomics \
-#   --results_base results/radiomics \
-#   --experiment_name more_features_v2_final_5fold_top3_tuned \
-#   --feature_strategy most_discriminant \
-#   --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
-#   --predefined_fold_id_type sample_id \
-#   --model_summary_csv results/radiomics/most_discriminant/gland/more_features_v2_rank_5x10/aggregated_performance/summary_metrics.csv \
-#   --top_k_models 3 \
-#   --bootstrap_iterations 1000 \
-#   --ci_level 0.95 \
-#   --classification_threshold 0.5 \
-#   --min_features 30 \
-#   --max_features_cap 100 \
-#   --samples_per_feature 15 \
-#   --minority_samples_per_feature 5 \
-#   --fdr_alpha 0.05 \
-#   --correlation_threshold 0.95 \
-#   --selection_n_jobs 32 \
-#   --tune \
-#   --tune_n_iter 20 \
-#   --tune_inner_splits 3 \
-#   --calculate_differences
-
-##For Ligthgmt
-# python train/radiomics/2_modeling/1_train_and_evaluate.py \
-#   --csv features_all_gland.csv \
-#   --data_pre artifacts/radiomics \
-#   --results_base results/radiomics \
-#   --experiment_name more_features_v2_final_5fold_top3_tuned \
-#   --feature_strategy most_discriminant \
-#   --predefined_folds_json results/radiomics/picai_nnunet_5folds.json \
-#   --predefined_fold_id_type sample_id \
-#   --model_summary_csv results/radiomics/most_discriminant/gland/more_features_v2_rank_5x10/aggregated_performance/summary_metrics.csv \
-#   --top_k_models 3 \
-#   --bootstrap_iterations 1000 \
-#   --ci_level 0.95 \
-#   --classification_threshold 0.5 \
-#   --min_features 30 \
-#   --max_features_cap 100 \
-#   --samples_per_feature 15 \
-#   --minority_samples_per_feature 5 \
-#   --fdr_alpha 0.05 \
-#   --correlation_threshold 0.95 \
-#   --selection_n_jobs 32 \
-#   --tune \
-#   --tune_n_iter 20 \
-#   --tune_inner_splits 3 \
-#   --tune_search_n_jobs 1 \
-#   --calculate_differences
-
-
-##Compare models
-
-# python train/radiomics/2_modeling/5_compare_oof_models.py \
-#   --ml_oof_csv results/radiomics/most_discriminant/gland/more_features_v2_final_5fold_top3_tuned/oof_predictions_aggregated_features_all_gland_most_discriminant.csv \
-#   --ml_summary_csv results/radiomics/most_discriminant/gland/more_features_v2_rank_5x10/aggregated_performance/summary_metrics.csv \
-#   --top_k_ml 3 \
-#   --dl_manifest_json results/radiomics/deep_tabular_models/more_features_v2_final_5fold_suite_manifest.json \
-#   --outdir results/radiomics/final_ml_vs_dl_more_features_v2
-
-
+case "${MODE}" in
+  submit)
+    previous_job_id=""
+    for script in "${PIPELINE[@]}"; do
+      if [[ -z "${previous_job_id}" ]]; then
+        previous_job_id="$(sbatch --parsable "${script}")"
+      else
+        previous_job_id="$(sbatch --parsable --dependency="afterok:${previous_job_id}" "${script}")"
+      fi
+      echo "Submitted ${script} as job ${previous_job_id}"
+    done
+    ;;
+  list)
+    printf '%s\n' "${PIPELINE[@]}"
+    ;;
+  *)
+    echo "Usage: ./run.sh [submit|list]" >&2
+    exit 2
+    ;;
+esac

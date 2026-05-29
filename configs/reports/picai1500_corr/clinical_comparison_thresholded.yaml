@@ -1,0 +1,9 @@
+compare:
+  outdir: results/radiomics/picai1500_corr/clinical_comparison_thresholded
+  id_column: sample_id
+  group_column: patient_id
+  threshold: 0.5
+  prediction_column: prediction_validation_youden
+  n_bootstrap: 1000
+  report_level: summary
+  prediction: []

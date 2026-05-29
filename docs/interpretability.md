@@ -1,23 +1,32 @@
 # Interpretability
 
-Interpretability is intentionally separated from the default report. The default
-report stays compact for model comparison, while this workflow produces the
-larger model-level outputs needed for scientific review.
+Interpretability is intentionally separated from the default comparison report.
+The current PI-CAI 1500 workflow runs one interpretability config per benchmark
+family and then combines them into a publication report.
 
-## Command
+## Commands
 
-```bash
-prostate-radiomics interpret \
-  --config configs/reports/full_interpretability.yaml
-```
-
-Use `--dry-run` first to inspect the resolved legacy command:
+Radiomics-only:
 
 ```bash
 prostate-radiomics interpret \
-  --config configs/reports/full_interpretability.yaml \
-  --dry-run
+  --config configs/reports/picai1500_corr/radiomics_only_interpretability.yaml
 ```
+
+Clinical-only, concatenated, and dual-branch:
+
+```bash
+prostate-radiomics interpret \
+  --config configs/reports/picai1500_corr/clinical_only_interpretability.yaml
+
+prostate-radiomics interpret \
+  --config configs/reports/picai1500_corr/concat_interpretability.yaml
+
+prostate-radiomics interpret \
+  --config configs/reports/picai1500_corr/dual_interpretability.yaml
+```
+
+Use `--dry-run` first to inspect the resolved legacy command.
 
 ## What It Computes
 
@@ -44,27 +53,20 @@ Across models:
 ## Key Outputs
 
 ```text
-results/radiomics/final_model_benchmark_with_interpretability/
-  metrics/
-  curves/
-  interpretability/
-    native/
-    permutation/
+results/radiomics/picai1500_corr/benchmarks/
+  radiomics_only_with_interpretability/
+  clinical_only_with_interpretability/
+  concat_with_interpretability/
+  dual_with_interpretability/
 ```
 
-Use these files for manuscript-level interpretation:
+Publication-ready tables and grouped figures are written to:
 
-- `metrics/pooled_metrics_all_models.csv`
-- `metrics/case_level_pairwise_comparisons.csv`
-- `interpretability/permutation/*/global_permutation_importance.csv`
-- `interpretability/native/*/global_native_importance.csv`
-- `interpretability/permutation/permutation_importance_heatmap.png`
-- `interpretability/permutation/permutation_top_feature_overlap.png`
+```text
+results/radiomics/picai1500_corr/publication_report/
+```
 
-## Practical Notes
-
-Permutation importance is model-agnostic and is the best default for comparing
-ML and DL models on the same feature space. Native importances and SHAP/IG are
-useful within a model family, but they should be interpreted alongside
-permutation drops, selected fold features, and confidence intervals from the
-clinical report.
+Permutation importance is the best default for comparing ML and DL models on
+the same feature space. Native importances and SHAP/IG are useful within a
+model family, but they should be interpreted alongside permutation drops,
+selected fold features, and confidence intervals from the clinical report.

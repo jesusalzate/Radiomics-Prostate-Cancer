@@ -1,0 +1,29 @@
+cff-version: 1.2.0
+message: "If you use this software or its results, please cite it as below."
+title: "Radiomics-Based Machine Learning and Deep Learning for Clinically Significant Prostate Cancer Detection on Multiparametric MRI"
+type: software
+authors:
+  - family-names: "Alzate-Grisales"
+    given-names: "Jesús Alejandro"
+    # orcid: "https://orcid.org/0000-0000-0000-0000"  # TODO: add ORCID
+  - family-names: "Valero-Sanchis"
+    given-names: "José"
+    # orcid: "https://orcid.org/0000-0000-0000-0000"  # TODO: add ORCID
+version: "0.1.0"
+date-released: "2026-05-29"
+license: MIT
+repository-code: "https://github.com/jesusalzate/Radiomics-Prostate-Cancer"  # TODO: confirm URL
+keywords:
+  - radiomics
+  - prostate cancer
+  - multiparametric MRI
+  - machine learning
+  - deep learning
+  - csPCa
+abstract: >-
+  A reproducible workflow for detecting clinically significant prostate cancer
+  (csPCa, ISUP grade group >= 2) from multiparametric prostate MRI radiomics
+  features, clinical variables, and combined tabular models, evaluated with
+  patient-grouped cross-validation, leakage-safe feature selection, calibrated
+  probabilities, and patient-level bootstrap confidence intervals on the PI-CAI
+  cohort.

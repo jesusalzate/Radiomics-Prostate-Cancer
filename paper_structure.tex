@@ -465,11 +465,14 @@ computed identically across families as the mean decrease in out-of-fold AUROC
 when a feature is randomly permuted. The concordance of the leading features
 across model families was summarized by the pairwise top-15 Jaccard overlap and
 by the features shared by all models. Finally, at the spatial level, the
-individual highest-importance features were back-projected to the image as
+individual high-importance features were back-projected to the image as
 voxel-wise radiomic maps, computed within the gland and overlaid on the
-corresponding T2-weighted, ADC, and DWI series together with the prostate-gland
-and csPCa-lesion delineations, so that the spatial correspondence between each
-feature and the lesion could be examined.
+corresponding ADC or DWI series together with the prostate-gland and
+csPCa-lesion delineations. For spatial comparison, each displayed case also
+included the original DWI slice with only the gland and lesion contours. Feature
+maps were rendered on a relative low-to-high scale for each feature panel, so
+that the spatial pattern of each descriptor could be inspected without implying
+that raw radiomic units are comparable across feature families.
 
 %% ---------------------------------------------------------------
 \section{Results}
@@ -657,9 +660,9 @@ rose to the top of the ranking: PSA density was the single most important featur
 in the concatenation Random Forest---ahead of every radiomic descriptor, with
 higher values increasing csPCa probability---and PSA density, age, and
 prostate-specific antigen appeared among the leading features of the dual-branch
-model, interleaved with diffusion and ADC texture (lower ADC first-order total
-energy, lower DWI coarseness, and higher DWI gray-level non-uniformity associated
-with csPCa). This re-ranking offers a direct explanation for the modest
+model, interleaved with diffusion and ADC texture, including ADC first-order
+total energy and DWI gray-level co-occurrence and gray-level run-length texture
+features. This re-ranking offers a direct explanation for the modest
 discrimination gain conferred by the clinical variables: rather than refining the
 radiomic signal, they contributed largely independent, high-value information
 dominated by PSA density.
@@ -673,13 +676,17 @@ Figure~\ref{fig:concordance}), reflecting the redundancy of the high-dimensional
 radiomic space; despite this, two diffusion-weighted gray-level co-occurrence
 informational-measure-of-correlation features (exponential- and wavelet-filtered
 Imc) ranked among the fifteen most important features of every model, a robust
-signature shared across classical and deep architectures. Finally, the five most
-influential features were back-projected to the image as voxel-level maps
-(Figure~\ref{fig:featuremaps}). Their salient regions co-localized with the
-delineated csPCa lesion rather than being distributed uniformly through the
-gland; the ADC square-root first-order total-energy map, a top feature of the
-deep models, showed particularly close spatial correspondence with the lesion,
-and the diffusion-weighted texture maps highlighted the same focus. These
+signature shared across classical and deep architectures. Finally, a selected
+set of influential features was back-projected to the image as voxel-level maps
+in csPCa-positive cases with human-expert lesion delineations
+(Figure~\ref{fig:featuremaps}).
+The displayed set retained the ADC square-root first-order total-energy map and
+the recurrent DWI Imc texture features, and added a DWI LoG first-order skewness
+map and a DWI square GLRLM gray-level non-uniformity map to capture complementary
+diffusion-weighted first-order and run-length texture patterns.
+Their salient regions co-localized with the delineated csPCa lesion rather than
+being distributed uniformly through the gland; the ADC total-energy map and the
+diffusion-weighted texture maps repeatedly highlighted the same focus. These
 feature-resolved maps provide case-level spatial explanations directly on the
 anatomy, complementing the global importance summaries.
 
@@ -723,16 +730,36 @@ while overall feature-level agreement is moderate.}
 
 \begin{figure}[htbp]
 \centering
-\safeinclude[width=\textwidth]{fig_feature_maps.pdf}
-\caption{\textbf{Voxel-based maps of the five most influential radiomic features
-for a representative csPCa-positive case.} (A)~ADC square-root first-order total
-energy, (B)~DWI exponential GLCM Imc1, (C)~DWI wavelet GLCM Imc2, (D)~DWI
-square-root NGTDM coarseness, and (E)~DWI square GLRLM gray-level non-uniformity,
-each overlaid on the corresponding axial MRI slice; the prostate gland (cyan) and
-the csPCa lesion (green) are delineated. Colour encodes the voxel-based feature
-value on a per-feature relative scale (low to high). The high-importance regions,
-and the ADC total-energy map in particular, co-localize with the delineated
-lesion.}
+\begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \safeinclude[width=\linewidth]{fig_feature_maps_10322_1000328_map_only.png}
+    \caption{Case 10322\_1000328.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \safeinclude[width=\linewidth]{fig_feature_maps_11377_1001400_map_only.png}
+    \caption{Case 11377\_1001400.}
+\end{subfigure}
+
+\vspace{0.5em}
+\begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \safeinclude[width=\linewidth]{fig_feature_maps_10383_1000389_map_only.png}
+    \caption{Case 10383\_1000389.}
+\end{subfigure}
+\caption{\textbf{Original DWI and prostate-centered voxel-based radiomic maps in
+csPCa-positive cases with human-expert lesion delineations.} In each subfigure,
+(A)~original DWI slice with prostate
+gland (cyan) and csPCa lesion (green) delineations only; (B)~ADC square-root
+first-order total energy, (C)~DWI exponential GLCM Imc1, (D)~DWI LoG 3 mm
+first-order skewness, (E)~DWI wavelet GLCM Imc2, and (F)~DWI square GLRLM
+gray-level non-uniformity. Feature panels show only the voxel map within a
+prostate-centered bounding box, with the gland and lesion contours retained.
+Colour encodes voxel-based feature value on a per-feature relative scale
+(low to high). Panel titles indicate the feature direction from the signed
+SHAP/integrated-gradient beeswarm analyses: lower values support the positive
+csPCa class for B--D and F, whereas higher values support the positive csPCa
+class for E.}
 \label{fig:featuremaps}
 \end{figure}
 
@@ -765,28 +792,29 @@ interpretability analysis added a third dimension to these benchmark results: th
 selected radiomic signature was compact and highly reproducible across folds, was
 dominated by diffusion-weighted texture with a smaller but consistent ADC
 contribution, and converged---most clearly on two diffusion-weighted GLCM
-informational-measure-of-correlation features shared by every model's top
-ranking---across otherwise dissimilar classical and deep architectures. In the
+informational-measure-of-correlation features together with complementary
+first-order and run-length texture descriptors---across otherwise dissimilar
+classical and deep architectures. In the
 combined models the picture changed informatively: the clinical variables, and
 PSA density in particular, rose to the very top of the importance ranking,
 indicating that their benefit came from largely independent risk information
-rather than from refining the imaging signal. Mapping the individual
-highest-importance features back onto the anatomy showed that their salient
+rather than from refining the imaging signal. Mapping the selected
+high-importance features back onto the anatomy showed that their salient
 regions coincided with the delineated lesion---most strikingly for the ADC
-square-root total-energy map---rather than being spread uniformly through the
-gland, reinforcing the biological plausibility of the models and illustrating the
-feature-resolved spatial explanations this radiomics workflow can provide.
+square-root total-energy map and recurrent DWI texture maps---rather than being
+spread uniformly through the gland, reinforcing the biological plausibility of
+the models and illustrating the feature-resolved spatial explanations this
+radiomics workflow can provide.
 
 The identity and direction of the most influential features are biologically
 coherent with the pathophysiology of csPCa. Clinically significant tumours are
 densely cellular, which restricts water diffusion and produces the low ADC and
 elevated high b-value signal that underpin the diffusion sequences; accordingly,
 the models relied heavily on diffusion-weighted descriptors, and the quantitative
-ADC features surfaced by the deep models---lower ADC first-order total energy and
-lower ADC neighbouring-gray-tone-difference coarseness associated with
-csPCa---are consistent with reduced, more spatially uniform diffusion within
-hypercellular tumour. The texture descriptors that recurred across every model,
-the gray-level co-occurrence correlation and informational measures of
+ADC features surfaced by the deep models---including ADC first-order total
+energy---are consistent with reduced diffusion within hypercellular tumour. The
+texture descriptors that recurred across models, including gray-level
+co-occurrence correlation and informational measures of
 correlation, quantify the spatial orderliness and predictability of voxel
 intensities: malignant tissue disrupts the regular glandular architecture of the
 prostate, lowering this organized correlation structure and raising

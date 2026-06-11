@@ -61,6 +61,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--patience", type=int, default=50)
     parser.add_argument(
+        "--disable_validation_callbacks",
+        action="store_true",
+        help=(
+            "Disable early stopping and validation-driven learning-rate callbacks, "
+            "saving the weights from the final requested epoch."
+        ),
+    )
+    parser.add_argument(
+        "--train_full_epochs_restore_best",
+        action="store_true",
+        help="Train all requested epochs and retain the best validation-AUROC weights.",
+    )
+    parser.add_argument(
+        "--resume_existing_folds",
+        action="store_true",
+        help="Reuse completed, protocol-matching fold artifacts.",
+    )
+    parser.add_argument(
         "--transformer_loss",
         choices=["focal", "bce"],
         default="focal",
@@ -84,6 +102,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--final_refit_on_outer_train",
         action="store_true",
+    )
+    parser.add_argument(
+        "--final_refit_epochs",
+        type=int,
+        default=None,
+        help=(
+            "Optional fixed epoch count for the fresh model trained on the complete "
+            "outer-training fold. When omitted, the inner-validation-selected epoch is used."
+        ),
     )
     return parser.parse_args()
 
@@ -153,6 +180,14 @@ def main() -> None:
         ]
         if args.final_refit_on_outer_train:
             command.append("--final_refit_on_outer_train")
+        if args.disable_validation_callbacks:
+            command.append("--disable_validation_callbacks")
+        if args.train_full_epochs_restore_best:
+            command.append("--train_full_epochs_restore_best")
+        if args.resume_existing_folds:
+            command.append("--resume_existing_folds")
+        if args.final_refit_epochs is not None:
+            command.extend(["--final_refit_epochs", str(args.final_refit_epochs)])
         if args.predefined_folds_json:
             command.extend(
                 [

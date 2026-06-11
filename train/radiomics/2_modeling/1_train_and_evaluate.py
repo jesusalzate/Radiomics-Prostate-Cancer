@@ -783,14 +783,18 @@ def build_inner_reference_scores(
     groups_train: np.ndarray,
     *,
     n_splits: int = 3,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, str]:
     """Build train-only out-of-fold scores for calibration and threshold selection."""
 
     y_train = np.asarray(y_train).astype(int)
     groups_train = np.asarray(groups_train).astype(str)
     unique_groups = np.unique(groups_train)
     if len(unique_groups) < 2 or len(np.unique(y_train)) < 2:
-        return y_train.copy(), predict_binary_scores(estimator, X_train)
+        return (
+            y_train.copy(),
+            predict_binary_scores(estimator, X_train),
+            "outer_train_in_sample_fallback",
+        )
 
     effective_splits = max(2, min(int(n_splits), len(unique_groups)))
     splitter = GroupKFold(n_splits=effective_splits)
@@ -803,8 +807,12 @@ def build_inner_reference_scores(
 
     valid_mask = np.isfinite(oof_scores)
     if not np.any(valid_mask):
-        return y_train.copy(), predict_binary_scores(estimator, X_train)
-    return y_train[valid_mask], oof_scores[valid_mask]
+        return (
+            y_train.copy(),
+            predict_binary_scores(estimator, X_train),
+            "outer_train_in_sample_fallback",
+        )
+    return y_train[valid_mask], oof_scores[valid_mask], "outer_train_grouped_inner_cv_oof"
 
 
 def fit_probability_calibrator(
@@ -931,7 +939,7 @@ def evaluate_model(
         y_train_pred = fold_model.predict(X_train)
         raw_train_scores = predict_binary_scores(fold_model, X_train)
         raw_val_scores = predict_binary_scores(fold_model, X_val)
-        calibration_y_true, calibration_reference_scores = build_inner_reference_scores(
+        calibration_y_true, calibration_reference_scores, threshold_source = build_inner_reference_scores(
             estimator=fold_model,
             X_train=X_train,
             y_train=y_train,
@@ -1005,6 +1013,8 @@ def evaluate_model(
                 "validation_youden_threshold": val_youden_threshold,
                 "selected_threshold": selected_threshold,
                 "threshold_strategy": threshold_strategy,
+                "threshold_source": threshold_source,
+                "threshold_selection_n": int(len(calibration_y_true)),
                 "probability_calibration": probability_calibration,
                 "num_selected_features": len(selected_features),
                 "selected_features": selected_features,
@@ -1049,6 +1059,8 @@ def evaluate_model(
                 "validation_youden_threshold": float(val_youden_threshold),
                 "selected_threshold": float(selected_threshold),
                 "threshold_strategy": threshold_strategy,
+                "threshold_source": threshold_source,
+                "threshold_selection_n": int(len(calibration_y_true)),
                 "probability_calibration": probability_calibration,
             }
         )
@@ -1103,6 +1115,8 @@ def build_flat_prediction_table(predictions_data: list[dict]) -> pd.DataFrame:
                         "threshold_validation_youden": float(fold_info["validation_youden_threshold"]),
                         "selected_threshold": float(fold_info["selected_threshold"]),
                         "threshold_strategy": fold_info["threshold_strategy"],
+                        "threshold_source": fold_info["threshold_source"],
+                        "threshold_selection_n": int(fold_info["threshold_selection_n"]),
                         "probability_calibration": fold_info["probability_calibration"],
                         "selected_features": fold_info["selected_features"],
                     }
@@ -1142,6 +1156,8 @@ def aggregate_oof_predictions(flat_predictions_df: pd.DataFrame, threshold: floa
             threshold_validation_youden=("threshold_validation_youden", "mean"),
             selected_threshold=("selected_threshold", "mean"),
             threshold_strategy=("threshold_strategy", "first"),
+            threshold_source=("threshold_source", "first"),
+            threshold_selection_n=("threshold_selection_n", "mean"),
             probability_calibration=("probability_calibration", "first"),
         )
         .sort_values(by=["Classifier", "sample_id"])
@@ -2368,6 +2384,8 @@ def main():
                         "validation_youden_threshold": fold_info["validation_youden_threshold"],
                         "selected_threshold": fold_info["selected_threshold"],
                         "threshold_strategy": fold_info["threshold_strategy"],
+                        "threshold_source": fold_info["threshold_source"],
+                        "threshold_selection_n": fold_info["threshold_selection_n"],
                         "probability_calibration": fold_info["probability_calibration"],
                         "selected_features": fold_info["selected_features"],
                     }

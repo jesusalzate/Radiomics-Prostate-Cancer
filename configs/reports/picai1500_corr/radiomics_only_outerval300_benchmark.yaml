@@ -9,8 +9,8 @@ interpretability:
   ml_oof_csv: results/radiomics/picai1500_corr/ml/radiomics_only/most_discriminant/gland/picai1500_radiomics_only_ml_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv
   ml_summary_csv: artifacts/radiomics/model_selection/picai1295_rank_5x10_summary_metrics.csv
   top_k_ml: 3
-  dl_manifest_json: results/radiomics/picai1500_corr/dl/radiomics_only/picai1500_radiomics_only_refit_5fold_suite_manifest.json
-  outdir: results/radiomics/picai1500_corr/benchmarks/radiomics_only_with_interpretability
+  dl_manifest_json: results/radiomics/picai1500_corr/dl/radiomics_only_outerval300/picai1500_radiomics_only_outerval300_5fold_suite_manifest.json
+  outdir: results/radiomics/picai1500_corr/dl/radiomics_only_outerval300/benchmark_all_models
   classification_threshold: 0.5
   permutation_repeats: 20
   permutation_seed: 42
@@ -20,5 +20,5 @@ interpretability:
   top_features: 20
   max_native_samples: 200
   ig_steps: 64
-  reuse_existing_interpretability: true
+  reuse_existing_interpretability: false
   skip_case_level_stats: true

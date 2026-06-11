@@ -18,6 +18,13 @@ Historical PI-CAI 1295 and intermediate fair-comparison configs were moved to
 The current workflow validates that the PI-CAI split and feature tables contain
 1500 unique `sample_id` values before training proceeds.
 
+All active deep-model configs use an inner patient-grouped validation split to
+select the training epoch, calibration mapping, and operating threshold. A fresh
+model is then trained for the selected number of epochs on the complete
+outer-training fold before outer-fold prediction. Corrected outputs include
+`refit` in their run prefix so they remain distinguishable from the original
+reduced-training runs.
+
 ## SLURM Entry Point
 
 ```bash

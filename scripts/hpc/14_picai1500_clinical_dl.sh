@@ -24,7 +24,8 @@ export PYTHONUNBUFFERED=1
 export MPLBACKEND=Agg
 export TF_CPP_MIN_LOG_LEVEL=1
 
-python -m pip install --no-deps --no-build-isolation -e .
+flock logs/prostate_radiomics_pip.lock \
+  python -m pip install --no-deps --no-build-isolation -e .
 
 test -f "${BASE_DIR}/features/features_clinical_only.csv"
 test -f "${BASE_DIR}/features/features_all_gland_clinical.csv"
@@ -50,19 +51,31 @@ import pandas as pd
 
 base_dir = Path(sys.argv[1])
 manifests = [
-    base_dir / "dl/clinical_only/picai1500_clinical_only_5fold_suite_manifest.json",
-    base_dir / "dl/concat/picai1500_concat_5fold_suite_manifest.json",
-    base_dir / "dl/dual/picai1500_dual_5fold_suite_manifest.json",
+    base_dir / "dl/clinical_only/picai1500_clinical_only_refit_5fold_suite_manifest.json",
+    base_dir / "dl/concat/picai1500_concat_refit_5fold_suite_manifest.json",
+    base_dir / "dl/dual/picai1500_dual_refit_5fold_suite_manifest.json",
 ]
 for manifest_path in manifests:
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     for model in payload.get("models", []):
         oof_path = Path(model["oof_csv"])
+        summary_path = Path(model["run_dir"]) / "cv_summary.json"
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if summary.get("fold_validation_mode") != "inner_val":
+            raise SystemExit(f"{summary_path} did not use inner validation")
+        if summary.get("final_refit_on_outer_train") is not True:
+            raise SystemExit(f"{summary_path} did not refit on the full outer-training fold")
+        for fold in summary.get("folds", []):
+            diagnostics = fold.get("threshold_diagnostics", {})
+            if diagnostics.get("final_refit_on_outer_train") is not True:
+                raise SystemExit(
+                    f"{summary_path}/{fold.get('fold_label')} is missing the final refit"
+                )
         df = pd.read_csv(oof_path)
         n_cases = df["sample_id"].astype(str).nunique()
         if n_cases != 1500:
             raise SystemExit(f"{oof_path} has {n_cases} unique cases, expected 1500")
-    print(f"Validated DL manifest OOF predictions: {manifest_path}")
+    print(f"Validated full-outer-refit DL manifest: {manifest_path}")
 PY
 
 echo "Clinical PI-CAI 1500 DL results: ${BASE_DIR}/dl"

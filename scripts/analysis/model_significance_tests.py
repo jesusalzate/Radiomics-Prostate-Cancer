@@ -1,6 +1,6 @@
 """Paired model-comparison significance tests on aligned out-of-fold predictions.
 
-For each pre-specified pair of models this script reports, on the *same* pooled
+For each specified pair of models this script reports, on the *same* pooled
 out-of-fold samples:
 
 * AUROC and AUPRC (average precision) of each model;
@@ -9,6 +9,8 @@ out-of-fold samples:
   samples);
 * a patient-level cluster bootstrap of the AUROC and AUPRC difference, which
   respects the fact that a few patients contribute more than one MRI study.
+* Holm-adjusted p-values across the six contrasts, calculated separately for
+  AUROC and AUPRC.
 
 The cluster bootstrap is the primary test because samples are clustered by
 patient. DeLong is reported as a secondary, widely recognised reference test.
@@ -31,38 +33,45 @@ from scipy import stats
 from sklearn.metrics import average_precision_score, roc_auc_score
 
 # ---------------------------------------------------------------------------
-# Pre-specified contrasts. Each entry is (label, (group_A, model_A), (group_B, model_B)).
+# Specified contrasts. Each entry is
+# (label, scope, (group_A, model_A), (group_B, model_B)).
 # Model A is the "candidate", model B the "reference".
 # ---------------------------------------------------------------------------
 DEFAULT_CONTRASTS = [
     (
-        "Hybrid dual (best) vs radiomics-only (best)",
-        ("Radiomics+Clinical-dual", "dual_capsnet"),
+        "Hybrid dual Transformer vs radiomics-only RF",
+        "secondary/exploratory",
+        ("Radiomics+Clinical-dual", "dual_transformer"),
         ("Radiomics-only", "Random Forest"),
     ),
     (
-        "Hybrid concat (best) vs radiomics-only (best)",
+        "Hybrid concat RF vs radiomics-only RF",
+        "main study contrast",
         ("Radiomics+Clinical-concat", "Random Forest"),
         ("Radiomics-only", "Random Forest"),
     ),
     (
-        "Hybrid dual (best DL) vs hybrid concat (best ML)",
-        ("Radiomics+Clinical-dual", "dual_capsnet"),
+        "Hybrid dual Transformer vs hybrid concat RF",
+        "secondary/exploratory",
+        ("Radiomics+Clinical-dual", "dual_transformer"),
         ("Radiomics+Clinical-concat", "Random Forest"),
     ),
     (
-        "Radiomics-only ML (best) vs radiomics-only DL (best)",
+        "Radiomics-only RF vs radiomics-only Transformer",
+        "main study contrast",
         ("Radiomics-only", "Random Forest"),
         ("Radiomics-only", "transformer"),
     ),
     (
-        "Radiomics-only (best) vs clinical-only (best)",
+        "Radiomics-only RF vs clinical-only Transformer-CapsNet",
+        "secondary/exploratory",
         ("Radiomics-only", "Random Forest"),
         ("Clinical-only", "transformer_capsnet"),
     ),
     (
-        "Hybrid dual (best) vs clinical-only (best)",
-        ("Radiomics+Clinical-dual", "dual_capsnet"),
+        "Hybrid dual Transformer vs clinical-only Transformer-CapsNet",
+        "secondary/exploratory",
+        ("Radiomics+Clinical-dual", "dual_transformer"),
         ("Clinical-only", "transformer_capsnet"),
     ),
 ]
@@ -195,6 +204,18 @@ def get_model_frame(df: pd.DataFrame, group: str, model: str) -> pd.DataFrame:
     return sub.sort_values("sample_id").reset_index(drop=True)
 
 
+def holm_adjust(p_values: pd.Series | np.ndarray) -> np.ndarray:
+    """Return Holm step-down adjusted p-values in the original row order."""
+
+    values = np.asarray(pd.to_numeric(p_values, errors="raise"), dtype=float)
+    order = np.argsort(values)
+    ranked = values[order]
+    adjusted_ranked = np.maximum.accumulate((len(values) - np.arange(len(values))) * ranked)
+    adjusted = np.empty_like(adjusted_ranked)
+    adjusted[order] = np.clip(adjusted_ranked, 0.0, 1.0)
+    return adjusted
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -217,7 +238,7 @@ def main() -> None:
     df["patient_id"] = df["sample_id"].astype(str).str.split("_").str[0]
 
     rows = []
-    for label, (ga, ma), (gb, mb) in DEFAULT_CONTRASTS:
+    for label, scope, (ga, ma), (gb, mb) in DEFAULT_CONTRASTS:
         fa = get_model_frame(df, ga, ma)
         fb = get_model_frame(df, gb, mb)
         if not np.array_equal(fa.sample_id.values, fb.sample_id.values):
@@ -241,6 +262,7 @@ def main() -> None:
         rows.append(
             {
                 "contrast": label,
+                "scope": scope,
                 "model_a": f"{ga} | {ma}",
                 "model_b": f"{gb} | {mb}",
                 "auroc_a": boot_auroc["auroc_a"],
@@ -262,6 +284,9 @@ def main() -> None:
         )
 
     result = pd.DataFrame(rows)
+    result["auroc_bootstrap_p_holm"] = holm_adjust(result["auroc_bootstrap_p"])
+    result["auroc_delong_p_holm"] = holm_adjust(result["auroc_delong_p"])
+    result["auprc_bootstrap_p_holm"] = holm_adjust(result["auprc_bootstrap_p"])
     csv_path = out_dir / "model_comparison_significance.csv"
     result.to_csv(csv_path, index=False)
 
@@ -274,35 +299,41 @@ def main() -> None:
         "",
         f"Source predictions: `{pred_path.as_posix()}`  ",
         f"Patient-level cluster bootstrap iterations: {args.n_boot} (seed {args.seed}).  ",
-        "Primary test: patient-level cluster bootstrap of the metric difference. "
-        "Secondary: DeLong paired test for AUROC.",
+        "Primary inferential procedure: patient-level cluster bootstrap of the "
+        "metric difference. DeLong is a secondary AUROC reference.",
+        "Because model families and condition winners were screened on this cohort, "
+        "all tests are interpreted as exploratory. Holm adjustment is applied across "
+        "the six contrasts separately for AUROC and AUPRC.",
         "",
-        "| Contrast (A vs B) | AUROC A | AUROC B | ΔAUROC [95% CI] | Bootstrap p | DeLong p | ΔAUPRC [95% CI] | Bootstrap p |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Contrast (A vs B) | Scope | AUROC A | AUROC B | ΔAUROC [95% CI] | Raw p | Holm p | DeLong Holm p | ΔAUPRC [95% CI] | Raw p | Holm p |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for _, r in result.iterrows():
         lines.append(
-            "| {contrast} | {aa} | {ab} | {ad} [{adl}, {adh}] | {bp} | {dp} | {pd} [{pdl}, {pdh}] | {pbp} |".format(
+            "| {contrast} | {scope} | {aa} | {ab} | {ad} [{adl}, {adh}] | {bp} | {bh} | {dh} | {pd} [{pdl}, {pdh}] | {pbp} | {pbh} |".format(
                 contrast=r.contrast,
+                scope=r.scope,
                 aa=fmt(r.auroc_a),
                 ab=fmt(r.auroc_b),
                 ad=fmt(r.auroc_diff),
                 adl=fmt(r.auroc_diff_ci_low),
                 adh=fmt(r.auroc_diff_ci_high),
                 bp=fmt(r.auroc_bootstrap_p),
-                dp=fmt(r.auroc_delong_p),
+                bh=fmt(r.auroc_bootstrap_p_holm),
+                dh=fmt(r.auroc_delong_p_holm),
                 pd=fmt(r.auprc_diff),
                 pdl=fmt(r.auprc_diff_ci_low),
                 pdh=fmt(r.auprc_diff_ci_high),
                 pbp=fmt(r.auprc_bootstrap_p),
+                pbh=fmt(r.auprc_bootstrap_p_holm),
             )
         )
     lines += [
         "",
-        "Interpretation: a difference is statistically significant at the 0.05 "
-        "level when its 95% CI excludes 0 (equivalently bootstrap p < 0.05). "
-        "Model A is the candidate, model B the reference; positive differences "
-        "favour A.",
+        "Interpretation: model A is the candidate and model B the reference; "
+        "positive differences favour A. Multiplicity-aware interpretation uses "
+        "the Holm-adjusted p-values. Confidence intervals are unadjusted and do "
+        "not account for model-family screening.",
         "",
     ]
     md_path = out_dir / "model_comparison_significance.md"

@@ -2,7 +2,7 @@ train_deep:
   csv: results/radiomics/picai1500_corr/features/features_clinical_only.csv
   data_pre: artifacts/radiomics
   output_dir: results/radiomics/picai1500_corr/dl/clinical_only
-  run_prefix: picai1500_clinical_only_5fold
+  run_prefix: picai1500_clinical_only_refit_5fold
   architectures:
     - transformer
     - capsnet
@@ -16,4 +16,4 @@ train_deep:
   threshold_strategy: validation_youden
   probability_calibration: sigmoid
   fold_validation_mode: inner_val
-  final_refit_on_outer_train: false
+  final_refit_on_outer_train: true

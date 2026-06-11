@@ -2,7 +2,7 @@ train_deep:
   csv: results/radiomics/picai1500_corr/features/features_all_gland_clinical.csv
   data_pre: artifacts/radiomics
   output_dir: results/radiomics/picai1500_corr/dl/dual_longtrain
-  run_prefix: picai1500_dual_longtrain_5fold
+  run_prefix: picai1500_dual_longtrain_refit_5fold
   architectures:
     - dual_transformer
   feature_selection: most_discriminant
@@ -22,4 +22,4 @@ train_deep:
   threshold_strategy: validation_youden
   probability_calibration: sigmoid
   fold_validation_mode: inner_val
-  final_refit_on_outer_train: false
+  final_refit_on_outer_train: true

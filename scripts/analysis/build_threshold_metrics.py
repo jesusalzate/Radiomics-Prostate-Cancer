@@ -2,7 +2,7 @@
 
 For each model this reports, on the pooled out-of-fold predictions, the
 threshold-free discrimination (AUROC, AUPRC, Brier on calibrated probabilities)
-together with the operating point obtained at the per-fold validation-derived
+together with the operating point obtained at the per-fold outer-training-derived
 Youden threshold actually used by the pipeline (sensitivity, specificity,
 balanced accuracy, F1, PPV, NPV). Uncertainty is a patient-level cluster
 bootstrap (5000 iterations). Produces tables for (i) the six radiomics-only
@@ -120,13 +120,13 @@ def main():
     # (ii) best per condition
     conds = [
         ("Clinical-only", "Transformer-CapsNet",
-         load_dl(BASE / "dl/clinical_only/picai1500_clinical_only_5fold_transformer_capsnet/cv_oof_predictions.csv")),
+         load_dl(BASE / "dl/clinical_only/picai1500_clinical_only_refit_5fold_transformer_capsnet/cv_oof_predictions.csv")),
         ("Radiomics-only", "Random Forest",
          load_ml(BASE / "ml/radiomics_only/most_discriminant/gland/picai1500_radiomics_only_ml_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv", "Random Forest")),
         ("Radiomics+clinical (concat)", "Random Forest",
          load_ml(BASE / "ml/concat/most_discriminant/clinical/picai1500_concat_ml_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_clinical_most_discriminant.csv", "Random Forest")),
-        ("Radiomics+clinical (dual)", "CapsNet (dual)",
-         load_dl(BASE / "dl/dual/picai1500_dual_5fold_dual_capsnet/cv_oof_predictions.csv")),
+        ("Radiomics+clinical (dual)", "Transformer (dual)",
+         load_dl(BASE / "dl/dual/picai1500_dual_refit_5fold_dual_transformer/cv_oof_predictions.csv")),
     ]
     crows = []
     for cond, mod, df in conds:
@@ -147,8 +147,8 @@ def main():
                 ba=cell(r, "balanced_accuracy"), f1=cell(r, "f1"), ppv=cell(r, "ppv"), npv=cell(r, "npv")))
         return "\n".join(lines) + "\n"
 
-    md = "# Calibrated + validation-Youden operating-point metrics\n\n"
-    md += "Patient-level cluster bootstrap (5000). Thr = median per-fold validation Youden threshold.\n\n"
+    md = "# Calibrated + outer-training-derived Youden operating-point metrics\n\n"
+    md += "Patient-level cluster bootstrap (5000). Thr = median per-fold threshold selected without outer-fold labels.\n\n"
     md += render(radio_tbl, "Model", "Radiomics-only models") + "\n"
     md += render(cond_tbl, "Condition", "Best model per condition")
     (OUT / "threshold_metrics.md").write_text(md, encoding="utf-8")

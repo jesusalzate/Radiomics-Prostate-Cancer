@@ -1,0 +1,3 @@
+postprocess_deep:
+  manifest: results/radiomics/picai1500_corr/dl/radiomics_only_outerval300/picai1500_radiomics_only_outerval300_5fold_suite_manifest.json
+  outdir: results/radiomics/picai1500_corr/dl/radiomics_only_outerval300/picai1500_radiomics_only_outerval300_5fold_threshold_postprocess

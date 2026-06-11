@@ -12,7 +12,7 @@ interpretability:
     - LightGBM
     - Gradient Boosting
   top_k_ml: 3
-  dl_manifest_json: results/radiomics/picai1500_corr/dl/concat/picai1500_concat_5fold_suite_manifest.json
+  dl_manifest_json: results/radiomics/picai1500_corr/dl/concat/picai1500_concat_refit_5fold_suite_manifest.json
   outdir: results/radiomics/picai1500_corr/benchmarks/concat_with_interpretability
   classification_threshold: 0.5
   permutation_repeats: 20

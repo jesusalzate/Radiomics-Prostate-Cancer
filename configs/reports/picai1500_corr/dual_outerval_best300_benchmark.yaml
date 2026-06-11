@@ -12,16 +12,16 @@ interpretability:
     - LightGBM
     - Gradient Boosting
   top_k_ml: 3
-  dl_manifest_json: results/radiomics/picai1500_corr/dl/dual/picai1500_dual_refit_5fold_suite_manifest.json
-  outdir: results/radiomics/picai1500_corr/benchmarks/dual_with_interpretability
+  dl_manifest_json: results/radiomics/picai1500_corr/dl/dual_outerval_best300/picai1500_dual_outerval_best300_5fold_suite_manifest.json
+  outdir: results/radiomics/picai1500_corr/dl/dual_outerval_best300/benchmark_all_models
   classification_threshold: 0.5
   permutation_repeats: 20
   permutation_seed: 42
-  n_bootstrap: 1000
+  n_bootstrap: 5000
   bootstrap_seed: 42
-  n_permutation_tests: 1000
+  n_permutation_tests: 5000
   top_features: 20
   max_native_samples: 200
   ig_steps: 64
-  reuse_existing_interpretability: true
+  reuse_existing_interpretability: false
   skip_case_level_stats: true

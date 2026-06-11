@@ -49,7 +49,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils.class_weight import compute_class_weight
-from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint, ReduceLROnPlateau
 
 from train.common.radiomics_utils import (
     prepare_numeric_radiomics_matrix,
@@ -126,6 +126,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=300)
     parser.add_argument("--patience", type=int, default=50)
     parser.add_argument(
+        "--disable_validation_callbacks",
+        action="store_true",
+        help=(
+            "Train for exactly --epochs using the final-epoch weights. Disables "
+            "early stopping and validation-driven learning-rate reduction while "
+            "retaining validation metrics for monitoring."
+        ),
+    )
+    parser.add_argument(
+        "--train_full_epochs_restore_best",
+        action="store_true",
+        help=(
+            "Always train for all --epochs and save the weights from the epoch with "
+            "the highest validation AUROC. This uses validation labels for model selection."
+        ),
+    )
+    parser.add_argument(
+        "--resume_existing_folds",
+        action="store_true",
+        help=(
+            "Reuse completed fold artifacts when they match the requested architecture "
+            "and training protocol. Incomplete or mismatched folds are trained normally."
+        ),
+    )
+    parser.add_argument(
         "--transformer_loss",
         choices=["focal", "bce"],
         default="focal",
@@ -172,6 +197,16 @@ def parse_args() -> argparse.Namespace:
             "best epoch, calibration model, and threshold, then refit a fresh final "
             "model on the full outer-training fold before evaluating the outer fold. "
             "This makes the DL estimator use the same outer-training cases as ML."
+        ),
+    )
+    parser.add_argument(
+        "--final_refit_epochs",
+        type=int,
+        default=None,
+        help=(
+            "Train the fresh full-outer-training model for this fixed number of epochs "
+            "instead of the epoch selected on the inner validation split. Intended for "
+            "explicit fixed-budget sensitivity experiments."
         ),
     )
     parser.add_argument("--predefined_folds_json", default=None)
@@ -733,27 +768,59 @@ def train_and_evaluate_single_split(
         encoding="utf-8",
     )
 
-    early_stop = EarlyStopping(
-        monitor="val_auc",
-        mode="max",
-        patience=config.patience,
-        restore_best_weights=True,
-        verbose=1,
-    )
-    callbacks = [early_stop]
-    if args.architecture == "capsnet":
+    callbacks = []
+    best_weights_path = output_dir / "best_validation.weights.h5"
+    if args.train_full_epochs_restore_best:
         callbacks.append(
-            ReduceLROnPlateau(
-                monitor="val_loss",
-                factor=0.5,
-                patience=8,
-                min_lr=1e-6,
+            ModelCheckpoint(
+                filepath=best_weights_path,
+                monitor="val_auc",
+                mode="max",
+                save_best_only=True,
+                save_weights_only=True,
                 verbose=1,
             )
         )
+        if args.architecture == "capsnet":
+            callbacks.append(
+                ReduceLROnPlateau(
+                    monitor="val_loss",
+                    factor=0.5,
+                    patience=8,
+                    min_lr=1e-6,
+                    verbose=1,
+                )
+            )
+    elif not args.disable_validation_callbacks:
+        callbacks.append(
+            EarlyStopping(
+                monitor="val_auc",
+                mode="max",
+                patience=config.patience,
+                restore_best_weights=True,
+                verbose=1,
+            )
+        )
+        if args.architecture == "capsnet":
+            callbacks.append(
+                ReduceLROnPlateau(
+                    monitor="val_loss",
+                    factor=0.5,
+                    patience=8,
+                    min_lr=1e-6,
+                    verbose=1,
+                )
+            )
+    if args.train_full_epochs_restore_best:
+        callback_mode = "full_epochs_restore_best_validation_auc"
+    elif args.disable_validation_callbacks:
+        callback_mode = "disabled_final_epoch_weights"
+    else:
+        callback_mode = "early_stopping_restore_best"
     log_progress(
         f"{fold_label} | training {args.architecture} | input_dim={input_feature_count} | "
-        f"batch_size={config.batch_size} | epochs={config.epochs} | patience={config.patience}"
+        f"batch_size={config.batch_size} | epochs={config.epochs} | patience={config.patience} | "
+        f"validation_callbacks={callback_mode}"
     )
     y_train_model = prepare_targets_for_architecture(
         args.architecture,
@@ -780,6 +847,14 @@ def train_and_evaluate_single_split(
     )
 
     best_epoch = int(np.argmax(history.history.get("val_auc", [0.0])) + 1)
+    if args.train_full_epochs_restore_best:
+        if not best_weights_path.exists():
+            raise FileNotFoundError(f"Best-validation checkpoint was not created: {best_weights_path}")
+        model.load_weights(best_weights_path)
+        log_progress(
+            f"{fold_label} | restored best validation-AUROC weights | "
+            f"best_epoch={best_epoch} | trained_epochs={len(history.history.get('loss', []))}"
+        )
     val_prob_raw = predict_positive_probability(model, args.architecture, X_val)
     model_for_test = model
     X_test_for_prediction = X_test
@@ -795,15 +870,23 @@ def train_and_evaluate_single_split(
         )
         refit_class_weight = balanced_class_weight_for(y_refit_train)
         final_model = build_fresh_model(X_refit_train)
+        refit_epochs = (
+            int(args.final_refit_epochs)
+            if args.final_refit_epochs is not None
+            else max(1, best_epoch)
+        )
+        if refit_epochs < 1:
+            raise ValueError("--final_refit_epochs must be at least 1.")
         log_progress(
             f"{fold_label} | final refit on full outer train | "
-            f"n={len(y_refit_train)} | epochs={best_epoch} | "
+            f"n={len(y_refit_train)} | epochs={refit_epochs} | "
+            f"epoch_source={'fixed_override' if args.final_refit_epochs is not None else 'inner_validation'} | "
             f"class_weight={refit_class_weight}"
         )
         refit_history = final_model.fit(
             X_refit_train,
             y_refit_model,
-            epochs=max(1, best_epoch),
+            epochs=refit_epochs,
             batch_size=config.batch_size,
             class_weight=refit_class_weight,
             verbose=2,
@@ -842,6 +925,20 @@ def train_and_evaluate_single_split(
         "validation_auc_pre": float(roc_auc_score(y_val, val_prob_raw)),
         "validation_auc_post": float(roc_auc_score(y_val, val_prob)),
     }
+    threshold_source = (
+        "fixed_0.5"
+        if args.threshold_strategy == "fixed_0.5"
+        else (
+            "outer_fold_validation"
+            if args.fold_validation_mode == "outer_val"
+            else "outer_train_inner_validation_split"
+        )
+    )
+    validation_role = (
+        "outer_fold_reported_validation"
+        if args.fold_validation_mode == "outer_val"
+        else "outer_train_inner_validation"
+    )
     probability_summary = {
         **summarize_probabilities(val_prob_raw, "val_raw"),
         **summarize_probabilities(val_prob, "val_calibrated"),
@@ -851,9 +948,50 @@ def train_and_evaluate_single_split(
         "fixed_threshold": 0.5,
         "validation_youden_threshold": float(val_youden_threshold),
         "threshold_strategy": args.threshold_strategy,
+        "threshold_source": threshold_source,
+        "threshold_selection_n": int(len(y_val)),
         "probability_calibration": args.probability_calibration,
+        "validation_role": validation_role,
+        "validation_callbacks_enabled": not args.disable_validation_callbacks,
+        "training_selection_mode": (
+            "full_epochs_best_validation_auc"
+            if args.train_full_epochs_restore_best
+            else (
+                "final_epoch"
+                if args.disable_validation_callbacks
+                else "early_stopping_best_validation_auc"
+            )
+        ),
+        "trained_epochs": int(len(history.history.get("loss", []))),
+        "saved_weight_epoch": (
+            int(best_epoch)
+            if args.train_full_epochs_restore_best
+            else (
+                int(len(history.history.get("loss", [])))
+                if args.disable_validation_callbacks
+                else int(best_epoch)
+            )
+        ),
         "final_refit_on_outer_train": bool(args.final_refit_on_outer_train and refit_train_mask is not None),
-        "best_epoch_from_inner_validation": int(best_epoch),
+        "best_validation_epoch_diagnostic": int(best_epoch),
+        "final_refit_epochs": (
+            (
+                int(args.final_refit_epochs)
+                if args.final_refit_epochs is not None
+                else int(best_epoch)
+            )
+            if args.final_refit_on_outer_train and refit_train_mask is not None
+            else None
+        ),
+        "final_refit_epoch_source": (
+            (
+                "fixed_override"
+                if args.final_refit_epochs is not None
+                else "inner_validation"
+            )
+            if args.final_refit_on_outer_train and refit_train_mask is not None
+            else "none"
+        ),
         "refit_train_size": int(refit_train_size),
         "calibration_summary": calibration_summary,
         "test_metrics_at_fixed_0_5": test_metrics_fixed_0_5,
@@ -870,6 +1008,8 @@ def train_and_evaluate_single_split(
     predictions["threshold"] = threshold
     predictions["threshold_fixed_0_5"] = 0.5
     predictions["threshold_validation_youden"] = val_youden_threshold
+    predictions["threshold_source"] = threshold_source
+    predictions["threshold_selection_n"] = int(len(y_val))
     predictions["probability_csPCa_raw"] = test_prob_raw
     predictions["probability_csPCa"] = test_prob
     predictions["prediction_fixed_0_5"] = test_pred_fixed_0_5
@@ -912,6 +1052,8 @@ def train_and_evaluate_single_split(
         **test_metrics,
         "selected_threshold": float(threshold),
         "validation_youden_threshold": float(val_youden_threshold),
+        "threshold_source": threshold_source,
+        "threshold_selection_n": int(len(y_val)),
     }
     for metric_name, metric_value in test_metrics_fixed_0_5.items():
         fold_metric_payload[f"fixed_0_5_{metric_name}"] = metric_value
@@ -970,6 +1112,11 @@ def train_and_evaluate_single_split(
 
 def main() -> None:
     args = parse_args()
+    if args.disable_validation_callbacks and args.train_full_epochs_restore_best:
+        raise ValueError(
+            "--disable_validation_callbacks and --train_full_epochs_restore_best "
+            "cannot be used together."
+        )
     set_reproducibility(args.random_state)
 
     data_root = PROJECT_ROOT / args.data_pre
@@ -1045,6 +1192,72 @@ def main() -> None:
                 f"outer_test={len(split_definition['val_idx'])}"
             )
 
+            if args.resume_existing_folds:
+                existing_paths = {
+                    "metrics": fold_output_dir / "test_metrics.csv",
+                    "predictions": fold_output_dir / "test_predictions.csv",
+                    "run_config": fold_output_dir / "run_config.json",
+                    "history": fold_output_dir / "training_history.csv",
+                    "model": fold_output_dir / f"radiomics_{args.architecture}.keras",
+                }
+                if all(path.exists() for path in existing_paths.values()):
+                    existing_config = json.loads(
+                        existing_paths["run_config"].read_text(encoding="utf-8")
+                    )
+                    existing_args = existing_config.get("arguments", {})
+                    existing_diagnostics = existing_config.get("threshold_diagnostics", {})
+                    existing_history = pd.read_csv(existing_paths["history"])
+                    protocol_matches = (
+                        existing_config.get("architecture") == args.architecture
+                        and existing_args.get("fold_validation_mode") == args.fold_validation_mode
+                        and bool(existing_args.get("disable_validation_callbacks", False))
+                        == bool(args.disable_validation_callbacks)
+                        and bool(existing_args.get("train_full_epochs_restore_best", False))
+                        == bool(args.train_full_epochs_restore_best)
+                        and int(existing_args.get("epochs", -1)) == int(args.epochs)
+                        and existing_args.get("threshold_strategy") == args.threshold_strategy
+                        and existing_args.get("probability_calibration")
+                        == args.probability_calibration
+                    )
+                    completion_matches = (
+                        len(existing_history) == int(args.epochs)
+                        and int(existing_diagnostics.get("trained_epochs", -1)) == int(args.epochs)
+                        and (
+                            (
+                                1
+                                <= int(existing_diagnostics.get("saved_weight_epoch", -1))
+                                <= int(args.epochs)
+                            )
+                            if args.train_full_epochs_restore_best
+                            else int(existing_diagnostics.get("saved_weight_epoch", -1))
+                            == int(args.epochs)
+                        )
+                    )
+                    if protocol_matches and completion_matches:
+                        fold_metrics = pd.read_csv(existing_paths["metrics"]).iloc[0].to_dict()
+                        fold_predictions = pd.read_csv(existing_paths["predictions"])
+                        fold_metrics_rows.append(
+                            {
+                                "fold_index": fold_position,
+                                "fold_label": fold_name,
+                                **fold_metrics,
+                            }
+                        )
+                        if "fold_index" not in fold_predictions.columns:
+                            fold_predictions.insert(0, "fold_index", fold_position)
+                        prediction_frames.append(fold_predictions)
+                        fold_run_configs.append(existing_config)
+                        log_progress(
+                            f"{fold_name} | resumed completed fold | epochs={len(existing_history)} | "
+                            "saved_weight_epoch="
+                            f"{existing_diagnostics.get('saved_weight_epoch')}"
+                        )
+                        continue
+                    log_progress(
+                        f"{fold_name} | existing artifacts did not match the requested protocol; "
+                        "training fold again"
+                    )
+
             outer_train_mask = pd.Series(False, index=df.index)
             outer_test_mask = pd.Series(False, index=df.index)
             outer_train_mask.iloc[split_definition["train_idx"]] = True
@@ -1054,8 +1267,9 @@ def main() -> None:
                 inner_train_mask = outer_train_mask.copy()
                 inner_val_mask = outer_test_mask.copy()
                 log_progress(
-                    f"{fold_name} | notebook-style fold validation: using outer train_ids for training "
-                    "and outer val_ids for both early stopping and reported fold metrics"
+                    f"{fold_name} | direct outer-fold validation: using outer train_ids for training "
+                    "and outer val_ids for validation monitoring and reported fold metrics | "
+                    f"validation_callbacks_enabled={not args.disable_validation_callbacks}"
                 )
             else:
                 inner_train_mask, inner_val_mask = build_inner_train_val_masks(
@@ -1128,22 +1342,28 @@ def main() -> None:
             y_pred=oof_predictions_df["prediction_validation_youden"].to_numpy(dtype=int),
             y_prob=oof_predictions_df["probability_csPCa"].to_numpy(dtype=float),
         )
+        numeric_metric_columns = [
+            column
+            for column in cv_metrics_df.select_dtypes(include=[np.number]).columns
+            if column != "fold_index"
+        ]
         summary_payload = {
             "feature_table": str(feature_table),
             "n_outer_folds": len(split_definitions),
             "fold_metric_mean": {
                 column: float(cv_metrics_df[column].mean())
-                for column in cv_metrics_df.columns
-                if column not in {"fold_index", "fold_label"}
+                for column in numeric_metric_columns
             },
             "fold_metric_std": {
                 column: float(cv_metrics_df[column].std(ddof=1))
-                for column in cv_metrics_df.columns
-                if column not in {"fold_index", "fold_label"} and len(cv_metrics_df) > 1
+                for column in numeric_metric_columns
+                if len(cv_metrics_df) > 1
             },
             "threshold_strategy": args.threshold_strategy,
             "fold_validation_mode": args.fold_validation_mode,
+            "validation_callbacks_enabled": not args.disable_validation_callbacks,
             "final_refit_on_outer_train": bool(args.final_refit_on_outer_train),
+            "final_refit_epochs": args.final_refit_epochs,
             "oof_metrics": oof_metrics_selected,
             "oof_metrics_fixed_0_5": oof_metrics_fixed_0_5,
             "oof_metrics_validation_youden": oof_metrics_validation_youden,

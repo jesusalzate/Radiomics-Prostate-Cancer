@@ -1596,12 +1596,66 @@ def model_interpretability_ready(
     model_name: str,
     permutation_dir: Path,
     native_dir: Path,
+    expected_fold_aurocs: dict[int, float],
 ) -> bool:
     model_slug = make_safe_slug(model_name)
-    return (
-        (permutation_dir / model_slug / "global_permutation_importance.csv").exists()
-        and (native_dir / model_slug / "global_native_importance.csv").exists()
+    permutation_path = permutation_dir / model_slug / "permutation_importance_by_fold.csv"
+    native_path = native_dir / model_slug / "native_importance_by_fold.csv"
+    if not permutation_path.exists() or not native_path.exists():
+        return False
+
+    try:
+        permutation_df = pd.read_csv(permutation_path)
+        native_df = pd.read_csv(native_path)
+    except (OSError, pd.errors.EmptyDataError, pd.errors.ParserError):
+        return False
+
+    required_permutation_columns = {
+        "model_name",
+        "model_family",
+        "feature",
+        "fold_index",
+        "baseline_auroc",
+        "mean_auc_drop",
+        "mean_ap_drop",
+    }
+    required_native_columns = {
+        "model_name",
+        "model_family",
+        "feature",
+        "fold_index",
+        "method",
+        "importance",
+    }
+    if (
+        permutation_df.empty
+        or native_df.empty
+        or not required_permutation_columns.issubset(permutation_df.columns)
+        or not required_native_columns.issubset(native_df.columns)
+    ):
+        return False
+
+    cached_fold_aurocs = (
+        permutation_df.groupby("fold_index", as_index=True)["baseline_auroc"].first().astype(float).to_dict()
     )
+    if set(cached_fold_aurocs) != set(expected_fold_aurocs):
+        return False
+    return all(
+        np.isclose(cached_fold_aurocs[fold_index], expected_auc, rtol=1e-9, atol=1e-12)
+        for fold_index, expected_auc in expected_fold_aurocs.items()
+    )
+
+
+def load_model_interpretability_records(
+    *,
+    model_name: str,
+    permutation_dir: Path,
+    native_dir: Path,
+) -> tuple[list[dict], list[dict]]:
+    model_slug = make_safe_slug(model_name)
+    permutation_df = pd.read_csv(permutation_dir / model_slug / "permutation_importance_by_fold.csv")
+    native_df = pd.read_csv(native_dir / model_slug / "native_importance_by_fold.csv")
+    return permutation_df.to_dict(orient="records"), native_df.to_dict(orient="records")
 
 
 def fit_ml_model_for_fold(
@@ -1883,12 +1937,27 @@ def main() -> None:
 
     # ML interpretability
     for classifier_name in selected_ml_classifiers:
+        classifier_fold_metrics = fold_metrics_df[fold_metrics_df["model_name"] == classifier_name]
+        expected_fold_aurocs = dict(
+            zip(
+                classifier_fold_metrics["fold_index"].astype(int),
+                classifier_fold_metrics["auroc"].astype(float),
+            )
+        )
         if args.reuse_existing_interpretability and model_interpretability_ready(
             model_name=classifier_name,
             permutation_dir=permutation_dir,
             native_dir=native_dir,
+            expected_fold_aurocs=expected_fold_aurocs,
         ):
             log_progress(f"Interpretability | ML | {classifier_name} | already available on disk, skipping")
+            cached_permutation, cached_native = load_model_interpretability_records(
+                model_name=classifier_name,
+                permutation_dir=permutation_dir,
+                native_dir=native_dir,
+            )
+            permutation_rows.extend(cached_permutation)
+            native_rows.extend(cached_native)
             continue
         log_progress(f"Interpretability | ML | {classifier_name}")
         model_permutation_records = []
@@ -1991,12 +2060,27 @@ def main() -> None:
         for model_entry in dl_models:
             model_name = str(model_entry["architecture"])
             run_dir = Path(model_entry["run_dir"]).resolve()
+            model_fold_metrics = fold_metrics_df[fold_metrics_df["model_name"] == model_name]
+            expected_fold_aurocs = dict(
+                zip(
+                    model_fold_metrics["fold_index"].astype(int),
+                    model_fold_metrics["auroc"].astype(float),
+                )
+            )
             if args.reuse_existing_interpretability and model_interpretability_ready(
                 model_name=model_name,
                 permutation_dir=permutation_dir,
                 native_dir=native_dir,
+                expected_fold_aurocs=expected_fold_aurocs,
             ):
                 log_progress(f"Interpretability | DL | {model_name} | already available on disk, skipping")
+                cached_permutation, cached_native = load_model_interpretability_records(
+                    model_name=model_name,
+                    permutation_dir=permutation_dir,
+                    native_dir=native_dir,
+                )
+                permutation_rows.extend(cached_permutation)
+                native_rows.extend(cached_native)
                 continue
             log_progress(f"Interpretability | DL | {model_name}")
             model_permutation_records = []
@@ -2017,7 +2101,8 @@ def main() -> None:
                 outer_train_mask.iloc[split_definition["train_idx"]] = True
                 outer_test_mask.iloc[split_definition["val_idx"]] = True
                 fold_validation_mode = str(fold_args.get("fold_validation_mode", "inner_val"))
-                if fold_validation_mode == "outer_val":
+                final_refit_on_outer_train = bool(fold_args.get("final_refit_on_outer_train", False))
+                if fold_validation_mode == "outer_val" or final_refit_on_outer_train:
                     fit_mask = outer_train_mask
                 else:
                     inner_train_mask, _ = dl_module.build_inner_train_val_masks(
@@ -2157,6 +2242,9 @@ def main() -> None:
     native_df = pd.DataFrame(native_rows)
     permutation_df.to_csv(permutation_dir / "permutation_importance_by_fold.csv", index=False)
     native_df.to_csv(native_dir / "native_importance_by_fold.csv", index=False)
+
+    if permutation_df.empty:
+        raise RuntimeError("No permutation-importance records were generated or loaded.")
 
     global_permutation_df = (
         permutation_df.groupby(["model_name", "model_family", "feature"], as_index=False)

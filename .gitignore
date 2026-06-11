@@ -29,6 +29,7 @@ train/radiomics/1_extract_radiomics/voxel_extraction/results/
 *.joblib
 *.keras
 *.out
+*.err
 
 # Keep source radiomics feature tables and cohort manifest versionable unless explicitly removed.
 !artifacts/data.csv

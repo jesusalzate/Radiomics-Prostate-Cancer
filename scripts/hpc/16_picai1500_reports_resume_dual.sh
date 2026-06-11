@@ -31,7 +31,7 @@ export TF_CPP_MIN_LOG_LEVEL=1
 
 python -m pip install --no-deps --no-build-isolation -e .
 
-test -f "${BASE_DIR}/dl/dual/picai1500_dual_5fold_suite_manifest.json"
+test -f "${BASE_DIR}/dl/dual/picai1500_dual_refit_5fold_suite_manifest.json"
 test -f "${BASE_DIR}/benchmarks/radiomics_only_with_interpretability/metrics/pooled_metrics_all_models.csv"
 test -f "${BASE_DIR}/benchmarks/clinical_only_with_interpretability/metrics/pooled_metrics_all_models.csv"
 test -f "${BASE_DIR}/benchmarks/concat_with_interpretability/metrics/pooled_metrics_all_models.csv"
@@ -79,6 +79,12 @@ python scripts/analysis/build_clinical_fair_publication_report.py \
   --benchmark Radiomics+Clinical-concat="${BASE_DIR}/benchmarks/concat_with_interpretability" \
   --benchmark Radiomics+Clinical-dual="${BASE_DIR}/benchmarks/dual_with_interpretability" \
   --outdir "${BASE_DIR}/publication_report"
+
+python scripts/analysis/model_significance_tests.py \
+  --predictions "${BASE_DIR}/publication_report/metrics/pooled_predictions_all_groups.csv" \
+  --output-dir "${BASE_DIR}/publication_report/significance"
+
+python scripts/analysis/build_threshold_metrics.py
 
 python - "${BASE_DIR}" <<'PY'
 import sys

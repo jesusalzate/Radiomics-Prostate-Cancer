@@ -1,8 +1,8 @@
 train_deep:
   csv: results/radiomics/picai1500_corr/features/features_all_gland_clinical.csv
   data_pre: artifacts/radiomics
-  output_dir: results/radiomics/picai1500_corr/dl/concat
-  run_prefix: picai1500_concat_refit_5fold
+  output_dir: results/radiomics/picai1500_corr/dl/concat_outerval_best300
+  run_prefix: picai1500_concat_outerval_best300_5fold
   architectures:
     - transformer
     - capsnet
@@ -21,7 +21,8 @@ train_deep:
   batch_size: 16
   epochs: 300
   patience: 50
-  threshold_strategy: validation_youden
-  probability_calibration: sigmoid
-  fold_validation_mode: inner_val
-  final_refit_on_outer_train: true
+  train_full_epochs_restore_best: true
+  resume_existing_folds: true
+  threshold_strategy: fixed_0.5
+  probability_calibration: none
+  fold_validation_mode: outer_val

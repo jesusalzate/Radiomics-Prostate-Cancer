@@ -49,7 +49,11 @@ prostate-radiomics postprocess-deep \
 ```
 
 The classical run validates the 1500-case split, selects the final top ML model
-families, and writes the shared fold feature plan consumed by the deep run.
+families, and writes the shared fold feature plan consumed by the deep run. For
+each deep outer fold, the inner validation split selects the best epoch,
+calibration mapping, and operating threshold; the reported estimator is then
+initialized afresh and trained for that epoch count on the complete
+outer-training fold.
 
 ## 4. Clinical And Combined Models
 

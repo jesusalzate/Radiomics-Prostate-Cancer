@@ -13,9 +13,9 @@ PYTHON_MODULE="${PYTHON_MODULE:-Python/3.11.5-GCCcore-11.2.0}"
 VENV_ACTIVATE="${VENV_ACTIVATE:-/projects/ceib/python_enviroments/radiomics_venv/bin/activate}"
 
 BASE_DIR="results/radiomics/picai1500_corr"
-BASELINE_SUMMARY="${BASE_DIR}/dl/dual/picai1500_dual_5fold_dual_transformer/cv_summary.json"
+BASELINE_SUMMARY="${BASE_DIR}/dl/dual/picai1500_dual_refit_5fold_dual_transformer/cv_summary.json"
 LONGTRAIN_DIR="${BASE_DIR}/dl/dual_longtrain"
-LONGTRAIN_SUMMARY="${LONGTRAIN_DIR}/picai1500_dual_longtrain_5fold_dual_transformer/cv_summary.json"
+LONGTRAIN_SUMMARY="${LONGTRAIN_DIR}/picai1500_dual_longtrain_refit_5fold_dual_transformer/cv_summary.json"
 
 module load "${PYTHON_MODULE}"
 source "${VENV_ACTIVATE}"

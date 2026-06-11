@@ -81,11 +81,16 @@ def postprocess_deep_threshold_run(
         label_column = _detect_label_column(fold_df)
         probability_column = _detect_probability_column(fold_df)
         youden_threshold = float(diagnostics["validation_youden_threshold"])
+        threshold_source = str(diagnostics.get("threshold_source", "legacy_unspecified"))
+        threshold_selection_n = diagnostics.get("threshold_selection_n")
 
         if "fold_label" not in fold_df.columns:
             fold_df["fold_label"] = fold_dir.name
         fold_df["threshold_fixed_0_5"] = 0.5
         fold_df["threshold_validation_youden"] = youden_threshold
+        fold_df["threshold_source"] = threshold_source
+        if threshold_selection_n is not None:
+            fold_df["threshold_selection_n"] = int(threshold_selection_n)
         fold_df["prediction_fixed_0_5"] = (fold_df[probability_column].to_numpy(dtype=float) >= 0.5).astype(int)
         fold_df["prediction_validation_youden"] = (
             fold_df[probability_column].to_numpy(dtype=float) >= youden_threshold
@@ -107,6 +112,10 @@ def postprocess_deep_threshold_run(
             "fold_label": fold_dir.name,
             "n_samples": int(len(fold_df)),
             "validation_youden_threshold": youden_threshold,
+            "threshold_source": threshold_source,
+            "threshold_selection_n": (
+                int(threshold_selection_n) if threshold_selection_n is not None else np.nan
+            ),
         }
         for metric_name, metric_value in fixed_metrics.items():
             row[f"fixed_0_5_{metric_name}"] = metric_value
@@ -152,6 +161,7 @@ def postprocess_deep_threshold_run(
             "median": float(fold_metrics_df["validation_youden_threshold"].median()),
             "max": float(fold_metrics_df["validation_youden_threshold"].max()),
         },
+        "threshold_sources": sorted(fold_metrics_df["threshold_source"].astype(str).unique().tolist()),
     }
     summary_path = destination / "threshold_comparison_summary.json"
     summary_path.write_text(json.dumps(summary_payload, indent=2, sort_keys=True), encoding="utf-8")

@@ -199,7 +199,11 @@ def test_cli_postprocess_deep_smoke(tmp_path):
         }
     ).to_csv(fold_1 / "test_predictions.csv", index=False)
     (fold_1 / "threshold_diagnostics.json").write_text(
-        '{"validation_youden_threshold": 0.35}',
+        (
+            '{"validation_youden_threshold": 0.35, '
+            '"threshold_source": "outer_train_inner_validation_split", '
+            '"threshold_selection_n": 8}'
+        ),
         encoding="utf-8",
     )
 
@@ -213,7 +217,11 @@ def test_cli_postprocess_deep_smoke(tmp_path):
         }
     ).to_csv(fold_2 / "test_predictions.csv", index=False)
     (fold_2 / "threshold_diagnostics.json").write_text(
-        '{"validation_youden_threshold": 0.25}',
+        (
+            '{"validation_youden_threshold": 0.25, '
+            '"threshold_source": "outer_train_inner_validation_split", '
+            '"threshold_selection_n": 8}'
+        ),
         encoding="utf-8",
     )
 
@@ -230,3 +238,5 @@ def test_cli_postprocess_deep_smoke(tmp_path):
     assert (outdir / "cv_oof_predictions_thresholds.csv").exists()
     assert (outdir / "threshold_comparison_fold_metrics.csv").exists()
     assert (outdir / "threshold_comparison_summary.json").exists()
+    predictions_df = pd.read_csv(outdir / "cv_oof_predictions_thresholds.csv")
+    assert set(predictions_df["threshold_source"]) == {"outer_train_inner_validation_split"}

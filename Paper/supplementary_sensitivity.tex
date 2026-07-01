@@ -1,0 +1,114 @@
+\documentclass[11pt]{article}
+
+%% ---------------------------------------------------------------
+%% Supplementary Material
+%% Sensitivity analysis: optimistic upper bound for the deep models
+%% under test-fold epoch selection.
+%% This file is a standalone supplement to the main manuscript
+%% (paper_structure.tex) and is NOT included in the main document.
+%% ---------------------------------------------------------------
+
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{amsmath}
+\usepackage[hidelinks]{hyperref}
+\usepackage{parskip}
+\usepackage{setspace}
+\usepackage{caption}
+
+\setstretch{1.15}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\captionsetup{font=small, labelfont=bf, width=0.95\linewidth}
+
+%% Number supplementary tables/figures as S1, S2, ...
+\renewcommand{\thetable}{S\arabic{table}}
+\renewcommand{\thefigure}{S\arabic{figure}}
+\renewcommand{\thesection}{S\arabic{section}}
+
+\title{\textbf{Supplementary Material}\\[4pt]
+Radiomics-Based Machine Learning and Deep Learning for Clinically Significant
+Prostate Cancer Detection on Biparametric MRI}
+\date{}
+
+\begin{document}
+\maketitle
+
+%% ---------------------------------------------------------------
+\section{Sensitivity analysis: optimistic upper bound for the deep models
+under test-fold epoch selection}
+\label{app:outerval}
+
+A natural concern when classical and deep models are compared is whether the
+deep architectures were disadvantaged by their training protocol. In the main
+analysis, the number of training epochs for each deep model was selected on an
+internal 80:20 split of the outer-training partition, after which the model was
+refit on the complete outer-training partition; the held-out outer fold was
+never used for any fitting or model-selection decision, exactly mirroring the
+leakage-safe treatment of the classical ensembles. To bound how much the deep
+models could gain from a more permissive---but optimistically biased---protocol,
+we repeated the deep-model experiments while selecting the training epoch by
+monitoring the held-out outer fold itself (up to 300 epochs). This procedure
+deliberately leaks information from the evaluation fold into model selection and
+therefore yields an \emph{upper bound} on deep-model performance rather than a
+valid estimate of generalization; the classical models were left unchanged and
+serve as the leakage-safe reference. All metrics are pooled out-of-fold values
+with patient-level cluster-bootstrap 95\% confidence intervals, reported at the
+fixed 0.5 probability threshold.
+
+Even under this favorable protocol, the deep models did not overturn the main
+conclusions (Table~\ref{tab:outerval}). In the radiomics-only setting---the
+primary comparison---the leakage-safe Random Forest (AUROC 0.814) remained at
+least as discriminative as every test-fold-selected deep model (best deep AUROC
+0.794), so the classical ensemble retained its advantage despite the deep models
+being granted a peek at the evaluation fold. Only in the combined conditions did
+the optimistically tuned deep models edge ahead of the Random Forest, and then
+only marginally and with broadly overlapping confidence intervals: by
+$+0.009$ AUROC for the concatenation Transformer (0.837 vs.\ 0.828) and by
+$+0.015$ AUROC for the dual-branch Transformer (0.843 vs.\ 0.828). These small,
+leakage-inflated margins are consistent with the main finding that, on this
+engineered radiomic feature space, deep tabular models do not confer a robust
+discrimination advantage over a calibrated tree ensemble, and they reinforce
+rather than weaken that conclusion: the deep models fail to clearly surpass the
+classical baseline even when the evaluation protocol is tilted in their favor.
+
+\begin{table}[htbp]
+\centering
+\caption{Optimistic upper bound for the deep models when the training epoch is
+selected on the held-out outer fold (a deliberately leakage-prone protocol),
+compared with the leakage-safe Random Forest reference carried over unchanged
+from the main analysis. Threshold-free metrics on pooled out-of-fold predictions
+with patient-level cluster-bootstrap 95\% confidence intervals; lower Brier is
+better. Deep-model rows are optimistic upper bounds and are \emph{not} valid
+estimates of generalization.}
+\label{tab:outerval}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llccc}
+\toprule
+Condition & Model (protocol) & AUROC & AUPRC & Brier \\
+\midrule
+\multirow{4}{*}{Radiomics-only}
+ & Random Forest (leakage-safe, reference) & 0.814 (0.790--0.837) & 0.605 (0.561--0.655) & 0.152 \\
+ & Transformer (test-fold epoch) & 0.794 (0.766--0.819) & 0.585 (0.544--0.636) & 0.161 \\
+ & CapsNet (test-fold epoch) & 0.761 (0.735--0.788) & 0.559 (0.519--0.608) & 0.202 \\
+ & Transformer--CapsNet (test-fold epoch) & 0.793 (0.767--0.818) & 0.588 (0.545--0.634) & 0.177 \\
+\midrule
+\multirow{4}{*}{Radiomics$+$clinical (concat)}
+ & Random Forest (leakage-safe, reference) & 0.828 (0.805--0.851) & 0.634 (0.591--0.683) & 0.147 \\
+ & Transformer (test-fold epoch) & 0.837 (0.815--0.860) & 0.649 (0.606--0.697) & 0.154 \\
+ & CapsNet (test-fold epoch) & 0.831 (0.809--0.853) & 0.646 (0.605--0.691) & 0.170 \\
+ & Transformer--CapsNet (test-fold epoch) & 0.828 (0.806--0.852) & 0.652 (0.612--0.696) & 0.166 \\
+\midrule
+\multirow{4}{*}{Radiomics$+$clinical (dual)}
+ & Random Forest (leakage-safe, reference) & 0.828 (0.805--0.851) & 0.634 (0.591--0.683) & 0.147 \\
+ & Dual Transformer (test-fold epoch) & 0.843 (0.821--0.864) & 0.671 (0.628--0.716) & 0.154 \\
+ & Dual CapsNet (test-fold epoch) & 0.840 (0.817--0.861) & 0.661 (0.620--0.706) & 0.151 \\
+ & Dual Transformer--CapsNet (test-fold epoch) & 0.829 (0.806--0.851) & 0.621 (0.581--0.673) & 0.171 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\end{document}

@@ -90,10 +90,10 @@ RADIOMICS_ORDER = [
 
 # Best model per experimental condition (group, model_name, display label).
 BEST_PER_CONDITION = [
-    ("Clinical-only", "transformer_capsnet", "Clinical-only"),
-    ("Radiomics-only", "Random Forest", "Radiomics-only"),
-    ("Radiomics+Clinical-concat", "Random Forest", "Radiomics+clinical (concat)"),
-    ("Radiomics+Clinical-dual", "dual_capsnet", "Radiomics+clinical (dual)"),
+    ("Clinical-only", "TabFM pretrained", "Clinical-only"),
+    ("Radiomics-only", "TabFM pretrained", "Radiomics-only"),
+    ("Radiomics+Clinical-concat", "TabFM pretrained", "Radiomics+clinical (concat)"),
+    ("Radiomics+Clinical-dual", "dual_transformer", "Radiomics+clinical (dual)"),
 ]
 
 

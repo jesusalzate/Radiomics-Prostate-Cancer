@@ -1,0 +1,29 @@
+train_tabfm:
+  csv: results/radiomics/picai1500_corr/features/features_all_gland_clinical.csv
+  data_pre: artifacts/radiomics
+  output_dir: results/radiomics/picai1500_corr/tabfm/final_5fold
+  run_prefix: picai1500_tabfm_final_5fold
+  variants:
+    - pretrained
+  label_column: label
+  group_column: patient_id
+  predefined_folds_json: results/radiomics/picai1500_corr/picai_5folds.json
+  shared_feature_folds_json: results/radiomics/picai1500_corr/feature_plans/radiomics_plus_clinical_feature_plan.json
+  predefined_fold_id_type: sample_id
+  device: auto
+  require_cuda: true
+  random_state: 42
+  n_estimators: 32
+  batch_size: 1
+  max_num_features: 500
+  max_num_rows: null
+  softmax_temperature: 0.9
+  norm_methods:
+    - none
+    - power
+  feat_shuffle_method: random
+  threshold_strategy: inner_val_youden
+  inner_threshold_splits: 5
+  permutation_importance_repeats: 0
+  permutation_importance_top_k: 0
+  resume_existing_folds: true

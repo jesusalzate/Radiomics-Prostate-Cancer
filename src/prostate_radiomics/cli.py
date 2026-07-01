@@ -104,6 +104,12 @@ def command_train_deep(args: argparse.Namespace) -> int:
     return _run_legacy_script(script, args.config, "train_deep", _strip_remainder(args.legacy_args), args.dry_run)
 
 
+def command_train_tabfm(args: argparse.Namespace) -> int:
+    root = _find_project_root()
+    script = root / "train" / "radiomics" / "2_modeling" / "7_run_tabfm_final_5fold.py"
+    return _run_legacy_script(script, args.config, "train_tabfm", _strip_remainder(args.legacy_args), args.dry_run)
+
+
 def command_interpret(args: argparse.Namespace) -> int:
     root = _find_project_root()
     script = root / "train" / "radiomics" / "2_modeling" / "6_compare_final_models_and_interpretability.py"
@@ -285,6 +291,12 @@ def build_parser() -> argparse.ArgumentParser:
     train_deep.add_argument("--dry-run", action="store_true")
     train_deep.add_argument("legacy_args", nargs=argparse.REMAINDER)
     train_deep.set_defaults(func=command_train_deep)
+
+    train_tabfm = subparsers.add_parser("train-tabfm", help="Run TabFM on the final PI-CAI 1500 folds.")
+    train_tabfm.add_argument("--config", default=None)
+    train_tabfm.add_argument("--dry-run", action="store_true")
+    train_tabfm.add_argument("legacy_args", nargs=argparse.REMAINDER)
+    train_tabfm.set_defaults(func=command_train_tabfm)
 
     interpret = subparsers.add_parser(
         "interpret",

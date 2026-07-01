@@ -74,6 +74,48 @@ DEFAULT_CONTRASTS = [
         ("Radiomics+Clinical-dual", "dual_transformer"),
         ("Clinical-only", "transformer_capsnet"),
     ),
+    (
+        "TabFM concat vs hybrid concat RF",
+        "TabFM add-on",
+        ("Radiomics+Clinical-concat", "TabFM pretrained"),
+        ("Radiomics+Clinical-concat", "Random Forest"),
+    ),
+    (
+        "TabFM concat vs hybrid dual Transformer",
+        "TabFM add-on",
+        ("Radiomics+Clinical-concat", "TabFM pretrained"),
+        ("Radiomics+Clinical-dual", "dual_transformer"),
+    ),
+    (
+        "TabFM concat vs radiomics-only RF",
+        "TabFM add-on",
+        ("Radiomics+Clinical-concat", "TabFM pretrained"),
+        ("Radiomics-only", "Random Forest"),
+    ),
+    (
+        "TabFM radiomics-only vs radiomics-only RF",
+        "TabFM add-on",
+        ("Radiomics-only", "TabFM pretrained"),
+        ("Radiomics-only", "Random Forest"),
+    ),
+    (
+        "TabFM clinical-only vs clinical-only Transformer-CapsNet",
+        "TabFM add-on",
+        ("Clinical-only", "TabFM pretrained"),
+        ("Clinical-only", "transformer_capsnet"),
+    ),
+    (
+        "TabFM dual-fusion vs hybrid dual Transformer",
+        "TabFM add-on",
+        ("Radiomics+Clinical-dual", "TabFM pretrained dual-fusion"),
+        ("Radiomics+Clinical-dual", "dual_transformer"),
+    ),
+    (
+        "TabFM dual-fusion vs TabFM concat",
+        "TabFM add-on",
+        ("Radiomics+Clinical-dual", "TabFM pretrained dual-fusion"),
+        ("Radiomics+Clinical-concat", "TabFM pretrained"),
+    ),
 ]
 
 
@@ -238,9 +280,14 @@ def main() -> None:
     df["patient_id"] = df["sample_id"].astype(str).str.split("_").str[0]
 
     rows = []
+    skipped = []
     for label, scope, (ga, ma), (gb, mb) in DEFAULT_CONTRASTS:
-        fa = get_model_frame(df, ga, ma)
-        fb = get_model_frame(df, gb, mb)
+        try:
+            fa = get_model_frame(df, ga, ma)
+            fb = get_model_frame(df, gb, mb)
+        except ValueError as exc:
+            skipped.append({"contrast": label, "reason": str(exc)})
+            continue
         if not np.array_equal(fa.sample_id.values, fb.sample_id.values):
             raise ValueError(f"sample_id mismatch for contrast {label!r}")
         if not np.array_equal(fa.true_label.values, fb.true_label.values):
@@ -284,11 +331,15 @@ def main() -> None:
         )
 
     result = pd.DataFrame(rows)
+    if result.empty:
+        raise ValueError("No model-comparison contrasts could be evaluated.")
     result["auroc_bootstrap_p_holm"] = holm_adjust(result["auroc_bootstrap_p"])
     result["auroc_delong_p_holm"] = holm_adjust(result["auroc_delong_p"])
     result["auprc_bootstrap_p_holm"] = holm_adjust(result["auprc_bootstrap_p"])
     csv_path = out_dir / "model_comparison_significance.csv"
     result.to_csv(csv_path, index=False)
+    if skipped:
+        pd.DataFrame(skipped).to_csv(out_dir / "model_comparison_significance_skipped.csv", index=False)
 
     # Human-readable markdown summary.
     def fmt(x: float) -> str:
@@ -336,6 +387,14 @@ def main() -> None:
         "not account for model-family screening.",
         "",
     ]
+    if skipped:
+        lines.extend(
+            [
+                "Skipped contrasts because required predictions were absent:",
+                *[f"- {item['contrast']}: {item['reason']}" for item in skipped],
+                "",
+            ]
+        )
     md_path = out_dir / "model_comparison_significance.md"
     md_path.write_text("\n".join(lines), encoding="utf-8")
 

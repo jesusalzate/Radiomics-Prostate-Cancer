@@ -31,7 +31,9 @@ DISPLAY = {"Random Forest": "Random Forest", "Gradient Boosting": "Gradient Boos
            "LightGBM": "LightGBM", "transformer": "Transformer", "capsnet": "CapsNet",
            "transformer_capsnet": "Transformer-CapsNet", "dual_capsnet": "CapsNet (dual)",
            "dual_transformer": "Transformer (dual)",
-           "dual_transformer_capsnet": "Transformer-CapsNet (dual)"}
+           "dual_transformer_capsnet": "Transformer-CapsNet (dual)",
+           "TabFM pretrained": "TabFM pretrained",
+           "TabFM pretrained dual-fusion": "TabFM pretrained dual-fusion"}
 
 
 def load_ml(path, classifier):
@@ -49,6 +51,17 @@ def load_dl(path):
     return pd.DataFrame({
         "sample_id": d.sample_id, "patient_id": d.patient_id.astype(str),
         "y": d.label.astype(int), "p": d.probability_csPCa.astype(float),
+        "pred": d.prediction_validation_youden.astype(int),
+        "thr": d.threshold_validation_youden.astype(float)})
+
+
+def load_tabfm(path):
+    d = pd.read_csv(path)
+    label_column = "label" if "label" in d.columns else "true_label"
+    probability_column = "probability_csPCa" if "probability_csPCa" in d.columns else "probability"
+    return pd.DataFrame({
+        "sample_id": d.sample_id, "patient_id": d.patient_id.astype(str),
+        "y": d[label_column].astype(int), "p": d[probability_column].astype(float),
         "pred": d.prediction_validation_youden.astype(int),
         "thr": d.threshold_validation_youden.astype(float)})
 
@@ -93,6 +106,16 @@ def boot(df, seed=SEED, n=N_BOOT):
     return out
 
 
+def choose_best_by_auroc(candidates):
+    scored = []
+    for cond, mod, df in candidates:
+        metrics = point(df.y.to_numpy(), df.p.to_numpy(), df.pred.to_numpy())
+        scored.append((metrics["auroc"], cond, mod, df))
+    scored.sort(key=lambda item: item[0], reverse=True)
+    _, cond, mod, df = scored[0]
+    return cond, mod, df
+
+
 def cell(r, m):
     return f"{r[m]:.3f} ({r[m+'_lo']:.3f}-{r[m+'_hi']:.3f})"
 
@@ -106,9 +129,13 @@ def main():
     # (i) radiomics-only six models
     order = ["Random Forest", "Gradient Boosting", "transformer",
              "transformer_capsnet", "LightGBM", "capsnet"]
+    if "TabFM pretrained" in set(rd.model_name.astype(str)):
+        order.append("TabFM pretrained")
     rows = []
     for m in order:
         sub = rd[rd.model_name == m]
+        if sub.empty:
+            continue
         df = pd.DataFrame({"sample_id": sub.sample_id, "patient_id": sub.patient_id,
                            "y": sub.true_label.astype(int), "p": sub.probability.astype(float),
                            "pred": sub.prediction_validation_youden.astype(int),
@@ -118,15 +145,47 @@ def main():
     radio_tbl.to_csv(OUT / "radiomics_only_threshold_metrics.csv", index=False)
 
     # (ii) best per condition
-    conds = [
-        ("Clinical-only", "Transformer-CapsNet",
-         load_dl(BASE / "dl/clinical_only/picai1500_clinical_only_refit_5fold_transformer_capsnet/cv_oof_predictions.csv")),
-        ("Radiomics-only", "Random Forest",
-         load_ml(BASE / "ml/radiomics_only/most_discriminant/gland/picai1500_radiomics_only_ml_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv", "Random Forest")),
-        ("Radiomics+clinical (concat)", "Random Forest",
-         load_ml(BASE / "ml/concat/most_discriminant/clinical/picai1500_concat_ml_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_clinical_most_discriminant.csv", "Random Forest")),
+    tabfm_root = BASE / "tabfm/final_5fold"
+    tabfm_concat = tabfm_root / "picai1500_tabfm_final_5fold_tabfm_pretrained/cv_oof_predictions.csv"
+    tabfm_radiomics = tabfm_root / "picai1500_tabfm_radiomics_only_final_5fold_tabfm_pretrained/cv_oof_predictions.csv"
+    tabfm_clinical = tabfm_root / "picai1500_tabfm_clinical_only_final_5fold_tabfm_pretrained/cv_oof_predictions.csv"
+    tabfm_dual = tabfm_root / "picai1500_tabfm_dual_fusion_final_5fold_tabfm_pretrained_dual_fusion/cv_oof_predictions.csv"
+    clinical_entry = (
+        ("Clinical-only", "TabFM pretrained", load_tabfm(tabfm_clinical))
+        if tabfm_clinical.exists()
+        else (
+            "Clinical-only", "Transformer-CapsNet",
+            load_dl(BASE / "dl/clinical_only/picai1500_clinical_only_refit_5fold_transformer_capsnet/cv_oof_predictions.csv")
+        )
+    )
+    radiomics_entry = (
+        ("Radiomics-only", "TabFM pretrained", load_tabfm(tabfm_radiomics))
+        if tabfm_radiomics.exists()
+        else (
+            "Radiomics-only", "Random Forest",
+            load_ml(BASE / "ml/radiomics_only/most_discriminant/gland/picai1500_radiomics_only_ml_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_most_discriminant.csv", "Random Forest")
+        )
+    )
+    concat_entry = (
+        ("Radiomics+clinical (concat)", "TabFM pretrained", load_tabfm(tabfm_concat))
+        if tabfm_concat.exists()
+        else (
+            "Radiomics+clinical (concat)", "Random Forest",
+            load_ml(BASE / "ml/concat/most_discriminant/clinical/picai1500_concat_ml_top3_tuned_calibrated/oof_predictions_aggregated_features_all_gland_clinical_most_discriminant.csv", "Random Forest")
+        )
+    )
+    dual_candidates = [
         ("Radiomics+clinical (dual)", "Transformer (dual)",
-         load_dl(BASE / "dl/dual/picai1500_dual_refit_5fold_dual_transformer/cv_oof_predictions.csv")),
+         load_dl(BASE / "dl/dual/picai1500_dual_refit_5fold_dual_transformer/cv_oof_predictions.csv"))
+    ]
+    if tabfm_dual.exists():
+        dual_candidates.append(("Radiomics+clinical (dual)", "TabFM pretrained dual-fusion", load_tabfm(tabfm_dual)))
+    dual_entry = choose_best_by_auroc(dual_candidates)
+    conds = [
+        clinical_entry,
+        radiomics_entry,
+        concat_entry,
+        dual_entry,
     ]
     crows = []
     for cond, mod, df in conds:

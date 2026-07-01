@@ -566,6 +566,10 @@ def process_modality(
             return None
 
         df_features = pd.DataFrame(feature_dict)
+        del feature_dict
+        del result
+
+        gc.collect()
 
         logger.info(
             f"[{patient_id}] {modality}: "

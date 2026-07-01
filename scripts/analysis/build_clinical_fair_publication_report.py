@@ -15,7 +15,18 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 from scipy.stats import t
-from sklearn.metrics import auc, precision_recall_curve, roc_curve
+from sklearn.metrics import (
+    auc,
+    average_precision_score,
+    balanced_accuracy_score,
+    brier_score_loss,
+    confusion_matrix,
+    f1_score,
+    matthews_corrcoef,
+    precision_recall_curve,
+    roc_auc_score,
+    roc_curve,
+)
 
 
 METRICS = ["auroc", "ap", "balanced_accuracy", "sensitivity", "specificity", "f1", "mcc", "brier_score"]
@@ -31,6 +42,12 @@ def parse_args() -> argparse.Namespace:
         required=True,
         help="Group label and benchmark directory in the form GROUP=PATH.",
     )
+    parser.add_argument(
+        "--extra-prediction",
+        action="append",
+        default=[],
+        help="Additional OOF model in the form GROUP=MODEL=CSV. Used for TabFM-style add-ons.",
+    )
     parser.add_argument("--outdir", default="results/radiomics/clinical_fair_comparison/publication_report")
     parser.add_argument("--top-metric", default="auroc", choices=METRICS)
     return parser.parse_args()
@@ -41,6 +58,14 @@ def parse_named_path(argument: str) -> tuple[str, Path]:
         raise ValueError(f"Expected GROUP=PATH, got: {argument}")
     name, raw_path = argument.split("=", 1)
     return name.strip(), Path(raw_path.strip())
+
+
+def parse_extra_prediction(argument: str) -> tuple[str, str, Path]:
+    parts = argument.split("=", 2)
+    if len(parts) != 3:
+        raise ValueError(f"Expected GROUP=MODEL=CSV, got: {argument}")
+    group, model_name, raw_path = parts
+    return group.strip(), model_name.strip(), Path(raw_path.strip())
 
 
 def ci95(values: pd.Series) -> tuple[float, float]:
@@ -63,6 +88,80 @@ def load_benchmark(group: str, benchmark_dir: Path) -> tuple[pd.DataFrame, pd.Da
         raise FileNotFoundError(predictions_path)
     metrics_df = pd.read_csv(metrics_path)
     predictions_df = pd.read_csv(predictions_path)
+    metrics_df["model_group"] = group
+    predictions_df["model_group"] = group
+    metrics_df["model_display"] = group + " | " + metrics_df["model_name"].astype(str)
+    predictions_df["model_display"] = group + " | " + predictions_df["model_name"].astype(str)
+    return metrics_df, predictions_df
+
+
+def compute_case_metrics(y_true: np.ndarray, y_prob: np.ndarray, y_pred: np.ndarray) -> dict[str, float]:
+    y_true = np.asarray(y_true).astype(int)
+    y_prob = np.asarray(y_prob, dtype=float)
+    y_pred = np.asarray(y_pred).astype(int)
+    tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
+    sensitivity = tp / (tp + fn) if (tp + fn) else np.nan
+    specificity = tn / (tn + fp) if (tn + fp) else np.nan
+    return {
+        "auroc": float(roc_auc_score(y_true, y_prob)) if len(np.unique(y_true)) > 1 else np.nan,
+        "ap": float(average_precision_score(y_true, y_prob)) if len(np.unique(y_true)) > 1 else np.nan,
+        "balanced_accuracy": float(balanced_accuracy_score(y_true, y_pred)),
+        "sensitivity": sensitivity,
+        "specificity": specificity,
+        "f1": float(f1_score(y_true, y_pred, zero_division=0)),
+        "mcc": float(matthews_corrcoef(y_true, y_pred)),
+        "brier_score": float(brier_score_loss(y_true, y_prob)),
+    }
+
+
+def load_extra_prediction(group: str, model_name: str, csv_path: Path) -> tuple[pd.DataFrame, pd.DataFrame]:
+    df = pd.read_csv(csv_path)
+    if "sample_id" not in df.columns:
+        raise ValueError(f"{csv_path} is missing sample_id")
+    label_column = "true_label" if "true_label" in df.columns else "label"
+    probability_column = "probability" if "probability" in df.columns else "probability_csPCa"
+    prediction_column = (
+        "prediction_validation_youden"
+        if "prediction_validation_youden" in df.columns
+        else "prediction"
+        if "prediction" in df.columns
+        else "prediction_fixed_0_5"
+    )
+    required = {"fold_index", label_column, probability_column, prediction_column}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"{csv_path} is missing columns: {sorted(missing)}")
+
+    metrics_rows = []
+    prediction_rows = []
+    for fold_index, fold_df in df.groupby("fold_index"):
+        y_true = fold_df[label_column].to_numpy(dtype=int)
+        y_prob = fold_df[probability_column].to_numpy(dtype=float)
+        y_pred = fold_df[prediction_column].to_numpy(dtype=int)
+        metrics_rows.append(
+            {
+                "model_name": model_name,
+                "model_family": "tabfm",
+                "fold_index": int(fold_index),
+                "n_cases": int(len(fold_df)),
+                **compute_case_metrics(y_true, y_prob, y_pred),
+            }
+        )
+        for _, row in fold_df.iterrows():
+            prediction_rows.append(
+                {
+                    "model_name": model_name,
+                    "model_family": "tabfm",
+                    "fold_index": int(fold_index),
+                    "sample_id": str(row["sample_id"]),
+                    "true_label": int(row[label_column]),
+                    "probability": float(row[probability_column]),
+                    "prediction_validation_youden": int(row[prediction_column]),
+                }
+            )
+
+    metrics_df = pd.DataFrame(metrics_rows)
+    predictions_df = pd.DataFrame(prediction_rows)
     metrics_df["model_group"] = group
     predictions_df["model_group"] = group
     metrics_df["model_display"] = group + " | " + metrics_df["model_name"].astype(str)
@@ -209,6 +308,11 @@ def main() -> int:
     for benchmark_arg in args.benchmark:
         group, benchmark_dir = parse_named_path(benchmark_arg)
         metrics_df, predictions_df = load_benchmark(group, benchmark_dir)
+        metrics_frames.append(metrics_df)
+        prediction_frames.append(predictions_df)
+    for extra_arg in args.extra_prediction:
+        group, model_name, csv_path = parse_extra_prediction(extra_arg)
+        metrics_df, predictions_df = load_extra_prediction(group, model_name, csv_path)
         metrics_frames.append(metrics_df)
         prediction_frames.append(predictions_df)
 

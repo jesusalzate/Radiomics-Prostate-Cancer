@@ -140,29 +140,39 @@ CapsNet, Transformer--CapsNet hybrid), and TabFM on a shared, leakage-safe,
 fold-specific feature-selection plan with calibration and an
 outer-training-derived threshold. Age, prostate-specific antigen (PSA), PSA
 density, and prostate volume were evaluated alone, by concatenation, and by
-dual-branch fusion. Metrics were computed on aligned out-of-fold predictions with
-patient-level cluster-bootstrap 95\% confidence intervals. TabFM gave the best
-radiomics-only discrimination (AUROC 0.828, 95\% CI 0.805--0.850; AUPRC 0.650),
-numerically above the Random Forest (AUROC 0.814) and the deep tabular pipelines
-(AUROC 0.794--0.803), although the TabFM-versus-Random-Forest difference was not
-significant after multiplicity adjustment ($\Delta$AUROC 0.014; Holm-adjusted
-$P=0.070$). Radiomics clearly outperformed clinical variables alone (best
-clinical-only AUROC 0.757, also TabFM); concatenating clinical variables with
-radiomics and passing them to TabFM produced the single best model overall
-(AUROC 0.844, 95\% CI 0.822--0.865; AUPRC 0.666), a significant improvement over
-both the previous best concatenation model (Random Forest, AUROC 0.828;
-Holm-adjusted $P=0.017$) and radiomics-only TabFM (Holm-adjusted $P<0.001$), with
-no benefit from dual-branch fusion over concatenation, which TabFM was not
-configured to perform. A random-weight control, in which TabFM's pretrained
-parameters were replaced by random initialization while keeping the architecture
-and inputs unchanged, collapsed to near-chance discrimination (AUROC 0.522),
-indicating that the observed gain reflects the foundation model's pretraining
-rather than its architecture alone. Center-stratified analysis revealed marked
-heterogeneity, with significantly lower discrimination at one of three centers
-(AUROC 0.74 vs.\ 0.84 elsewhere). A pretrained tabular foundation model thus
-provided a modest but statistically supported gain over strong, calibrated
-classical and deep tabular baselines, while a calibrated classical ensemble
-remained a highly competitive and more parsimonious alternative; aggregate
+dual-branch (or, for TabFM, dual-stream late-fusion) combination. Metrics were
+computed on aligned out-of-fold predictions with patient-level cluster-bootstrap
+95\% confidence intervals. TabFM gave the best radiomics-only discrimination
+(AUROC 0.828, 95\% CI 0.805--0.850; AUPRC 0.650), numerically above the Random
+Forest (AUROC 0.814) and the deep tabular pipelines (AUROC 0.794--0.803),
+although the TabFM-versus-Random-Forest difference was not significant after
+multiplicity adjustment ($\Delta$AUROC 0.014; Holm-adjusted $P=0.070$).
+Radiomics clearly outperformed clinical variables alone (best clinical-only
+AUROC 0.757, also TabFM); combining the two sources produced the best models
+overall, whether by simple concatenation passed to TabFM (AUROC 0.844, 95\% CI
+0.822--0.865; AUPRC 0.666) or by a logistic late-fusion of separately trained
+radiomics-only and clinical-only TabFM streams (AUROC 0.844, 0.822--0.865;
+AUPRC 0.674); both were statistically indistinguishable from each other
+($P=1.00$) but each was a significant improvement over the previous best model
+in its respective condition (concatenated Random Forest, Holm-adjusted
+$P=0.020$; dual-branch Transformer, Holm-adjusted $P=0.004$), and the
+concatenated TabFM was also a significant improvement over the radiomics-only
+Random Forest (Holm-adjusted $P<0.001$). A
+random-weight control, in which TabFM's pretrained parameters were replaced by
+random initialization while keeping the architecture and inputs unchanged,
+collapsed to near-chance discrimination (AUROC 0.522), indicating that the
+observed gain reflects the foundation model's pretraining rather than its
+architecture alone. Center-stratified analysis revealed marked heterogeneity,
+with significantly lower discrimination at one of three centers (AUROC 0.74
+vs.\ 0.84 elsewhere) in every model family including TabFM, and model-agnostic
+SHAP attributions confirmed that TabFM relied on the same diffusion-weighted
+and PSA-density signature as the classical and deep models. A pretrained tabular
+foundation model thus led numerically in all conditions and provided a
+modest but statistically supported gain over strong, calibrated classical and
+deep tabular baselines in the combined-modality conditions, with a consistent
+but non-significant lead in the radiomics-only and clinical-only settings, while
+a calibrated classical ensemble remained a highly competitive and more
+parsimonious alternative; aggregate
 performance again masked clinically relevant between-center variation. These
 comparisons are exploratory, as model families were screened on the same cohort.
 \end{abstract}
@@ -182,11 +192,13 @@ Radiomics-based machine-learning (ML) models have been developed on both mpMRI a
 
 The relative performance of classical radiomics-based ML versus deep learning (DL) remains an active topic of investigation. A validation study by Castillo et al.\ compared a radiomics model based on delineated mpMRI regions with a fully automated DL model for csPCa classification across three independent test cohorts. While DL obtained a higher AUROC during internal cross-validation, the classical radiomics model achieved a higher AUROC on all external cohorts, suggesting better generalizability of the radiomics approach under those conditions~\citep{Castillo2022Cancers}. Systematic reviews of bpMRI further support that while both paradigms can reach AUCs in the mid-0.80 range, DL often requires substantially larger training cohorts and may be particularly sensitive to domain shift, whereas tree-based ensembles remain highly competitive on tabular radiomic feature spaces~\citep{Diagnostics2022BpMRIReview,castillo2020automated}.
 
+A distinct and rapidly emerging paradigm for tabular data is the tabular foundation model, which reframes prediction as in-context learning: rather than fitting weights to each new dataset, a single Transformer pretrained on large collections of synthetic tabular tasks infers the mapping between features and labels directly from the training rows provided at inference time. TabPFN demonstrated that this approach can outperform tuned tree ensembles and neural networks on small-to-medium tables while requiring no dataset-specific training~\citep{hollmann2025tabpfn}, and subsequent models have extended in-context learning to larger tables~\citep{qu2025tabicl}. The recently released TabFM further scales this strategy through pretraining on hundreds of millions of synthetic datasets~\citep{kong2026tabfm}. Because engineered radiomic feature tables are moderate-dimensional, strongly inter-correlated, and typically available only in the low-thousands of cases, they fall squarely in the regime where such models are expected to be competitive, yet tabular foundation models have not, to our knowledge, been benchmarked for csPCa detection against calibrated classical and deep tabular baselines on an identical, leakage-safe radiomic feature space.
+
 An important line of research has focused on combining these radiomics profiles with routine clinical variables to build multimodal risk models. In a large single-center retrospective study (1{,}497 MRI exams from 1{,}395 men), Antol{\'i}n et al.\ developed four Random Forest-based models using automatically segmented whole-gland radiomics, PI-RADS, and clinical variables~\citep{Antolin2026Insights}. In their validation cohort, radiomics alone did not significantly outperform PI-RADS (AUC 0.838 vs.\ 0.833), but the combined clinical-radiomics-PI-RADS model achieved an AUC of 0.891, significantly outperforming the simpler models and providing the optimal trade-off between sensitivity, specificity, and biopsy avoidance~\citep{Antolin2026Insights}. Other clinical-radiomics models targeting PI-RADS~3 lesions or transition-zone tumors likewise confirm that adding radiomics to routine predictors—such as age, PSA, PSA density, and prostate volume—can yield modest but clinically meaningful gains in discrimination and decision-curve net benefit~\citep{BMC2025PIRADS3,FrontOnc2026TZRadiomics}.
 
 Against this background, large multicenter datasets and standardized evaluation protocols have been introduced to benchmark AI models for csPCa detection. Recent multicenter studies have evaluated MRI-based models designed to mimic routine practice, demonstrating that calibrated radiomics models can lower the proportion of equivocal cases while maintaining high negative predictive values~\citep{Bao2024,JZUSciB2023MRIRadiomics}. Concurrently, methodological reviews and the TRIPOD+AI statement call for more rigorous evaluation protocols, including patient-grouped cross-validation, strictly isolated feature-selection strategies, probability calibration, decision-curve analysis, and formal statistical comparison of competing models~\citep{collins2024tripodai}.
 
-The present study addresses several of these methodological gaps by benchmarking classical ML and deep tabular learning on an identical, IBSI-compliant whole-gland radiomic feature space derived from bpMRI. This evaluation utilizes the large, multicenter Prostate Imaging: Cancer AI (PI-CAI) public training and development dataset (1{,}500 studies from 1{,}476 patients, csPCa prevalence 28.3\,\%). Radiomic features are extracted from T2-weighted imaging, ADC maps, and high-$b$-value diffusion-weighted imaging using a unified pipeline. Performance is evaluated via patient-grouped five-fold cross-validation, employing strictly in-fold feature selection, probability calibration, and aligned out-of-fold predictions shared across all models. Furthermore, this study quantifies the incremental value of four routinely available clinical variables (age, PSA, PSA density, and prostate volume) and compares simple feature concatenation against a more complex dual-branch deep-fusion strategy. Supported by comprehensive interpretability analyses—including feature-selection stability, cross-model feature importance, and spatial back-projection of radiomic descriptors—the primary objective is to determine whether deep tabular models confer a genuine discrimination advantage over strong tree-ensemble baselines, and to assess exactly how much routinely collected clinical information adds to a calibrated, radiomics-based csPCa risk model.
+The present study addresses several of these methodological gaps by benchmarking three families of tabular predictors---classical machine learning, deep tabular learning trained from scratch, and a pretrained tabular foundation model (TabFM)---on an identical, IBSI-compliant whole-gland radiomic feature space derived from bpMRI. This evaluation utilizes the large, multicenter Prostate Imaging: Cancer AI (PI-CAI) public training and development dataset (1{,}500 studies from 1{,}476 patients, csPCa prevalence 28.3\,\%). Radiomic features are extracted from T2-weighted imaging, ADC maps, and high-$b$-value diffusion-weighted imaging using a unified pipeline. Performance is evaluated via patient-grouped five-fold cross-validation, employing strictly in-fold feature selection, probability calibration, and aligned out-of-fold predictions shared across all models. Furthermore, this study quantifies the incremental value of four routinely available clinical variables (age, PSA, PSA density, and prostate volume) and compares simple feature concatenation against more complex fusion strategies (dual-branch deep fusion and, for TabFM, dual-stream late fusion). Supported by comprehensive interpretability analyses—including feature-selection stability, cross-model feature importance, and spatial back-projection of radiomic descriptors—the primary objectives are to determine whether deep tabular models or a pretrained tabular foundation model confer a genuine discrimination advantage over strong tree-ensemble baselines, to test whether any such advantage depends on the foundation model's pretraining, and to assess exactly how much routinely collected clinical information adds to a calibrated, radiomics-based csPCa risk model.
 
 \section{Materials and Methods}
 \label{sec:methods}
@@ -388,20 +400,34 @@ inverse-frequency weighting, and predicted probabilities were calibrated by
 Platt scaling~\citep{platt1999probabilistic} fit on held-out training-fold
 predictions.
 
-A pretrained tabular foundation model, TabFM
-(\url{https://github.com/google-research/tabfm}), was added as a fourth model
-family alongside the classical ensembles and the deep architectures. TabFM
+A pretrained tabular foundation model, TabFM~\citep{kong2026tabfm}
+(weights \texttt{google/tabfm-1.0.0-pytorch}), was added as a fourth model
+family alongside the classical ensembles and the deep architectures. Building on
+the in-context-learning paradigm introduced by
+TabPFN~\citep{hollmann2025tabpfn}, TabFM
 performs inference by in-context learning over the training examples of each
 fold rather than by dataset-specific gradient training, drawing on parameters
-pretrained across a large corpus of heterogeneous tabular tasks; it was
+pretrained across a large corpus of synthetic tabular tasks; it was
 evaluated on exactly the same fold-specific, leakage-safe feature-selection
 output as the classical and deep models, so that any performance difference
 reflects the model itself rather than a different feature representation.
 TabFM was applied to the radiomics-only, clinical-only, and concatenation
-conditions using the same outer folds, Platt-scaling calibration, and
-outer-training-derived Youden threshold as the other model families; it was not
-configured for the dual-branch fusion architecture, so no TabFM result is
-reported for that condition. To determine whether TabFM's performance depended
+conditions using the same outer folds and outer-training-derived Youden
+threshold as the other model families. For the combined-modality condition,
+TabFM was additionally evaluated with a dual-stream late-fusion strategy that
+differs architecturally from the shared-dense-classifier dual-branch design
+used for the deep models: independent TabFM instances were fit in-context on
+the radiomics-only and clinical-only feature sets of each outer-training fold,
+and their predicted probabilities on an inner-validation split of that same
+fold (never including outer-fold cases) were combined by a logistic regression
+fit on five derived inputs (the two probabilities, their logits, and their
+absolute difference); this small fusion model and its Youden threshold, fit
+only on the inner-validation split, were then applied unchanged to the two
+TabFM streams' outer-fold test predictions. Because this dual-stream late
+fusion is architecturally distinct from the shared-dense-classifier dual-branch
+strategy used for the classical and deep models, the two ``dual'' conditions
+are reported alongside each other but should not be read as a controlled
+architectural comparison of fusion strategy. To determine whether TabFM's performance depended
 on its pretrained parameters rather than merely its architecture and
 in-context-learning procedure, a random-initialization control was evaluated in
 the radiomics-only condition, in which the pretrained weights were replaced by
@@ -508,6 +534,13 @@ radiomics-only versus clinical-only, and dual-branch versus clinical-only) were
 secondary. This primary/secondary designation was analytical rather than
 preregistered. Holm adjustment was applied across all six contrasts separately
 for AUROC and AUPRC, and both raw and adjusted $P$ values are reported. The
+seven contrasts involving TabFM were specified only after the foundation model
+became available, later than the original six, and are therefore treated as a
+separate Holm family adjusted among themselves rather than pooled with the
+original set, so that the adjusted $P$ values of the pre-specified comparisons
+are not altered retrospectively by the addition of a new model; this choice is
+conservative within each family but does not control error across the two
+families jointly, consistent with the overall exploratory framing. The
 patient-level cluster bootstrap was the primary inferential tool because a small
 number of patients contribute more than one study, which mildly violates the
 independence assumption of standard tests; the DeLong test is reported only as a
@@ -546,7 +579,12 @@ values~\citep{lundberg2017unified} for the classical models, and integrated
 gradients~\citep{sundararajan2017axiomatic} for the deep models, together with
 permutation importance~\citep{fisher2019all} as a model-agnostic common currency
 computed identically across families as the mean decrease in out-of-fold AUROC
-when a feature is randomly permuted. The concordance of the leading features
+when a feature is randomly permuted. For TabFM, whose in-context inference
+exposes no differentiable weights, model-agnostic permutation
+SHAP~\citep{lundberg2017unified} was computed on a held-out subsample of each
+fold (25 validation studies per fold, with a 50-study background set), yielding
+per-study signed attributions in the radiomics-only, clinical-only, and
+concatenation conditions. The concordance of the leading features
 across model families was summarized by the pairwise top-15 Jaccard overlap and
 by the features shared by all models. Finally, at the spatial level, the
 individual high-importance features were back-projected to the image as
@@ -574,66 +612,47 @@ substantially understate sensitivity.
 \subsection{Radiomics-only classification: classical versus deep models}
 \label{sec:res-radiomics}
 
-On the radiomics-only feature space, TabFM ranked first on AUROC (0.828, 95\%
-CI 0.805--0.850; AUPRC 0.650, 0.600--0.699), numerically above the classical
-Random Forest (0.814, 0.790--0.837; AUPRC 0.605, 0.556--0.658) and all three
-deep models (AUROC 0.794--0.803; Table~\ref{tab:radiomics_only_main}). In the
-specified TabFM--Random-Forest comparison, the AUROC difference was not
-significant after multiplicity adjustment ($\Delta$AUROC $+0.014$, 95\% CI
-0.003--0.025; raw bootstrap $P=0.014$; Holm-adjusted $P=0.070$;
-Table~\ref{tab:significance}), although AUPRC was significantly higher for
-TabFM ($\Delta=+0.045$, 95\% CI 0.015--0.072; raw $P=0.002$; Holm-adjusted
-$P=0.018$). The originally specified Random Forest--Transformer comparison
-remained non-significant ($\Delta$AUROC $+0.014$, raw $P=0.068$, Holm-adjusted
-$P=0.272$), and differences among the remaining models were small with
-overlapping intervals. TabFM also achieved the lowest Brier score (0.145),
-slightly better than Random Forest (0.152); the other models ranged from 0.154
-to 0.159. At each model's outer-training-derived Youden threshold (median
-0.18--0.26) the models operated at a clinically balanced point rather than the
-specificity-heavy behaviour seen at 0.5: TabFM reached the highest sensitivity
-among the top-ranked models (0.812, 0.774--0.848) at a specificity of 0.691
-(0.664--0.718) and the highest negative predictive value (0.903, 0.882--0.922),
-while Random Forest retained a marginally higher positive predictive value
-(0.534 vs.\ 0.510) and F1 score (0.630 vs.\ 0.626) at its own operating point;
-LightGBM attained the highest sensitivity among the non-TabFM models (0.791) at
-lower specificity (0.672), illustrating the operating-point trade-off available
-from the calibrated probabilities. Across all models, negative predictive value
-was high (0.86--0.90) while positive predictive value was moderate (0.49--0.54),
-a direct consequence of the 28.3\% disease prevalence: the models are more
-informative for ruling out than for confirming csPCa. A random-initialization
+On the radiomics-only feature space, TabFM ranked first on both discrimination
+metrics (AUROC 0.828, 95\% CI 0.805--0.850; AUPRC 0.650, 0.600--0.699), above
+the classical Random Forest (0.814; 0.605) and all three deep models (AUROC
+0.794--0.803), with the lowest Brier score (0.145); the full ranking with
+confidence intervals is shown in Figure~\ref{fig:radiomics_forest} and
+per-model operating-point metrics in Table~S2 (Supplementary Material). The
+confidence intervals overlapped substantially across families: in the specified
+TabFM--Random-Forest comparison the AUROC difference was not significant after
+multiplicity adjustment ($\Delta$AUROC $+0.014$; Holm-adjusted $P=0.070$),
+although AUPRC was ($\Delta=+0.045$; Holm-adjusted $P=0.018$;
+Table~\ref{tab:significance}), and the originally specified Random
+Forest--Transformer comparison was likewise non-significant ($\Delta$AUROC
+$+0.014$; Holm-adjusted $P=0.272$). At each model's outer-training-derived
+Youden threshold (median 0.18--0.26) the models operated at a clinically
+balanced point, with high negative predictive value (0.86--0.90) but only
+moderate positive predictive value (0.49--0.54) at the 28.3\% disease
+prevalence---so the models are more informative for ruling out than for
+confirming csPCa. A random-initialization
 control, in which TabFM's pretrained parameters were replaced with random
 weights while every other component of the pipeline was left unchanged,
 collapsed to near-chance discrimination (AUROC 0.522, AUPRC 0.294) and, at the
 0.5 threshold, defaulted to predicting every study as csPCa-positive
-(sensitivity 1.000, specificity 0.000). This confirms
-that TabFM's radiomics-only performance depends on its pretrained parameters
-rather than on its architecture or in-context-learning procedure alone.
+(sensitivity 1.000, specificity 0.000). This control bounds rather than fully
+isolates the effect of pretraining---an in-context model with random weights is
+not expected to be competitive---but, because the architecture and
+in-context-learning procedure were otherwise unchanged, it confirms that
+TabFM's radiomics-only performance depends on its pretrained parameters rather
+than on its architecture or in-context mechanism alone.
 
-\begin{table}[htbp]
+\begin{figure}[!htbp]
 \centering
-\caption{Radiomics-only model performance on pooled out-of-fold predictions.
-Threshold-free metrics (AUROC, AUPRC, Brier) use the calibrated probabilities;
-sensitivity, specificity, balanced accuracy, F1, PPV, and NPV are reported at the
-per-fold outer-training-derived Youden operating point. Values are point estimates
-with patient-level cluster-bootstrap 95\% confidence intervals for AUROC, AUPRC,
-sensitivity, and specificity. Lower Brier is better.}
-\label{tab:radiomics_only_main}
-\resizebox{\textwidth}{!}{
-\begin{tabular}{lccccccccc}
-\toprule
-Model & AUROC & AUPRC & Brier & Sensitivity & Specificity & Bal.\ acc. & F1 & PPV & NPV \\
-\midrule
-TabFM (foundation) & 0.828 (0.805--0.850) & 0.650 (0.600--0.699) & 0.145 & 0.812 (0.774--0.848) & 0.691 (0.664--0.718) & 0.751 & 0.626 & 0.510 & 0.903 \\
-Random Forest (ML) & 0.814 (0.790--0.837) & 0.605 (0.556--0.658) & 0.152 & 0.767 (0.724--0.806) & 0.736 (0.710--0.761) & 0.751 & 0.630 & 0.534 & 0.889 \\
-Gradient Boosting (ML) & 0.802 (0.777--0.825) & 0.592 (0.542--0.644) & 0.156 & 0.774 (0.733--0.813) & 0.675 (0.647--0.703) & 0.725 & 0.597 & 0.485 & 0.883 \\
-Transformer (DL) & 0.801 (0.775--0.824) & 0.609 (0.559--0.662) & 0.155 & 0.755 (0.714--0.795) & 0.684 (0.657--0.711) & 0.720 & 0.591 & 0.486 & 0.876 \\
-Transformer--CapsNet (DL) & 0.803 (0.777--0.826) & 0.600 (0.550--0.651) & 0.154 & 0.807 (0.768--0.843) & 0.672 (0.644--0.699) & 0.739 & 0.612 & 0.493 & 0.898 \\
-LightGBM (ML) & 0.792 (0.767--0.817) & 0.598 (0.548--0.650) & 0.159 & 0.791 (0.751--0.830) & 0.672 (0.644--0.700) & 0.731 & 0.603 & 0.488 & 0.890 \\
-CapsNet (DL) & 0.794 (0.768--0.820) & 0.589 (0.539--0.643) & 0.155 & 0.753 (0.710--0.793) & 0.685 (0.658--0.712) & 0.719 & 0.590 & 0.486 & 0.875 \\
-\bottomrule
-\end{tabular}
-}
-\end{table}
+\safeinclude[width=\textwidth]{fig_radiomics_forest.png}
+\caption{\textbf{Radiomics-only discrimination across model families.}
+Pooled out-of-fold (A) AUROC and (B) AUPRC with patient-level cluster-bootstrap
+95\% confidence intervals for the seven radiomics-only models, ordered by AUROC.
+The pretrained tabular foundation model (TabFM, orange) ranks first on both
+metrics, but its confidence intervals overlap those of the classical and deep
+baselines.}
+\label{fig:radiomics_forest}
+\end{figure}
+
 
 \subsection{Added value of clinical variables}
 \label{sec:res-clinical}
@@ -661,22 +680,42 @@ radiomics-only Random Forest in AUPRC, as reported above, and the concatenated
 Random Forest remained a significant improvement over the radiomics-only Random
 Forest ($\Delta$AUROC $+0.014$, 95\% CI 0.007--0.021, raw $P<0.001$,
 Holm-adjusted $P<0.001$; $\Delta$AUPRC $+0.029$, raw $P=0.004$, Holm-adjusted
-$P=0.022$). The best dual-branch model (Transformer) reached AUROC 0.826
-(0.802--0.848) and AUPRC 0.638 (0.589--0.692); TabFM was not configured for
-dual-branch fusion, so this comparison could not be extended to the foundation
-model. Neither the dual Transformer's difference from radiomics-only Random
-Forest nor from concatenated Random Forest remained significant after Holm
-adjustment (AUROC $P=0.266$ and $P=0.736$, respectively), so the added
-complexity of dual-branch fusion conferred no demonstrated benefit over simple
-concatenation among the architectures in which both strategies were compared.
+$P=0.022$). Among the classical and deep architectures, the best dual-branch
+model (Transformer, shared-dense-classifier fusion) reached AUROC 0.826
+(0.802--0.848) and AUPRC 0.638 (0.589--0.692), and neither its difference from
+radiomics-only Random Forest nor from concatenated Random Forest remained
+significant after Holm adjustment (AUROC $P=0.266$ and $P=0.736$,
+respectively), so the added complexity of dual-branch fusion conferred no
+demonstrated benefit over simple concatenation among these architectures. When
+TabFM was instead combined with clinical variables through the dual-stream
+late-fusion strategy described in Methods, it reached AUROC 0.844
+(0.822--0.865) and AUPRC 0.674 (0.626--0.726), a significant improvement over
+the dual Transformer ($\Delta$AUROC $+0.018$, Holm-adjusted $P=0.004$;
+$\Delta$AUPRC $+0.036$, Holm-adjusted $P=0.022$) that was numerically
+indistinguishable from the concatenated TabFM ($\Delta$AUROC $+0.0001$,
+Holm-adjusted $P=1.00$; $\Delta$AUPRC $+0.008$, Holm-adjusted $P=1.00$;
+Table~\ref{tab:significance}), so, unlike the classical and deep architectures,
+TabFM showed no advantage from either fusion strategy over the other: its
+concatenation and late-fusion results were essentially the same model in
+performance terms. Because the two ``dual'' strategies differ architecturally
+(shared-dense-classifier fusion for the classical and deep models versus
+logistic late fusion of two independently in-context-trained TabFM streams),
+this equivalence should not be read as evidence that TabFM's fusion mechanism
+is inherently more effective than dual-branch fusion, only that neither
+fusion strategy improved on simple concatenation within its own model family.
 At their selected operating points the combined models behaved similarly to the
-radiomics-only models, with balanced accuracy of 0.75--0.76. The concatenated
-TabFM had sensitivity 0.767 and specificity 0.745, comparable to the
-concatenated Random Forest (sensitivity 0.774, specificity 0.729) and the dual
-Transformer (sensitivity 0.746, specificity 0.741). Reliability curves, Brier
-scores, and decision curves are shown in Figure~\ref{fig:calibration_dca}: the
-concatenated TabFM had the lowest Brier score among all combined models (0.139
-versus 0.145--0.147). The improvement from adding clinical variables was modest
+radiomics-only models, with balanced accuracy of 0.75--0.76, except that the
+dual-fusion TabFM's Youden threshold (median 0.53) shifted its operating point
+toward higher specificity (0.761) than sensitivity (0.734), unlike the other
+combined models. The concatenated TabFM had sensitivity 0.767 and specificity
+0.745, comparable to the concatenated Random Forest (sensitivity 0.774,
+specificity 0.729) and the dual Transformer (sensitivity 0.746, specificity
+0.741). Reliability curves, Brier scores, and decision curves are shown in
+Figure~\ref{fig:calibration_dca}: the concatenated TabFM had the lowest Brier
+score among all combined models (0.139), whereas the dual-fusion TabFM's Brier
+score (0.167) was the highest among the combined models, reflecting weaker
+calibration of the small inner-validation-fit fusion model rather than weaker
+discrimination. The improvement from adding clinical variables was modest
 across model families and clearest when routed through TabFM; confidence
 intervals for the operating-point statistics overlapped.
 
@@ -684,9 +723,13 @@ intervals for the operating-point statistics overlapped.
 \centering
 \caption{Best model in each condition on pooled out-of-fold predictions, with
 threshold-dependent metrics at the outer-training-derived Youden operating point.
-Conventions and confidence intervals as in Table~\ref{tab:radiomics_only_main}.
-TabFM was not configured for the dual-branch fusion architecture, so the
-previous best dual-branch model (Transformer) is retained for that condition.}
+Threshold-free metrics use the calibrated probabilities; threshold-dependent
+metrics use the per-fold outer-training-derived Youden operating point, with
+patient-level cluster-bootstrap 95\% confidence intervals for AUROC, AUPRC,
+sensitivity, and specificity (lower Brier is better).
+For the dual-branch/dual-stream condition, TabFM's logistic late-fusion result
+is architecturally distinct from the shared-dense-classifier dual-branch design
+used for the classical and deep models (see Methods).}
 \label{tab:hybrid}
 \resizebox{\textwidth}{!}{
 \begin{tabular}{llccccccc}
@@ -696,7 +739,7 @@ Condition & Best model & AUROC & AUPRC & Brier & Sensitivity & Specificity & Bal
 Clinical-only & TabFM & 0.757 (0.730--0.784) & 0.533 (0.487--0.588) & 0.169 & 0.633 (0.587--0.679) & 0.753 (0.727--0.780) & 0.693 & 0.839 \\
 Radiomics-only & TabFM & 0.828 (0.805--0.850) & 0.650 (0.600--0.699) & 0.145 & 0.812 (0.774--0.848) & 0.691 (0.664--0.718) & 0.751 & 0.903 \\
 Radiomics$+$clinical (concat) & TabFM & 0.844 (0.822--0.865) & 0.666 (0.618--0.719) & 0.139 & 0.767 (0.726--0.806) & 0.745 (0.720--0.771) & 0.756 & 0.890 \\
-Radiomics$+$clinical (dual) & Transformer (dual) & 0.826 (0.802--0.848) & 0.638 (0.589--0.692) & 0.145 & 0.746 (0.703--0.786) & 0.741 (0.714--0.767) & 0.744 & 0.881 \\
+Radiomics$+$clinical (dual) & TabFM (late fusion) & 0.844 (0.822--0.865) & 0.674 (0.626--0.726) & 0.167 & 0.734 (0.691--0.776) & 0.761 (0.735--0.787) & 0.748 & 0.879 \\
 \bottomrule
 \end{tabular}
 }
@@ -730,7 +773,7 @@ threshold probability, with treat-all and treat-none reference strategies.}
 out-of-fold predictions. $\Delta$ is A$-$B; 95\% CIs and raw bootstrap $P$
 values are from a patient-level cluster bootstrap. Holm adjustment was applied
 across the six originally specified contrasts separately for AUROC and AUPRC.
-The five TabFM contrasts (lower block) were added after the foundation model
+The seven TabFM contrasts (lower block) were added after the foundation model
 became available and form a separate Holm family, adjusted among themselves and
 not pooled with the original six. DeLong $P$ is the paired AUROC reference
 test. Confidence intervals are unadjusted and conditional on the screened
@@ -749,11 +792,13 @@ Radiomics-only (RF) vs.\ clinical-only (Transformer--CapsNet) & $+0.060$ [0.029,
 Dual (Transformer) vs.\ clinical-only (Transformer--CapsNet) & $+0.072$ [0.049, 0.094] & $<0.001$ ($<0.001$) & $<0.001$ ($<0.001$) & $+0.090$ [0.052, 0.130], $<0.001$ ($<0.001$) \\
 \midrule
 \multicolumn{5}{@{}l}{\emph{TabFM contrasts (separate Holm family)}} \\
-Concat (TabFM) vs.\ concat (RF) & $+0.016$ [0.005, 0.026] & 0.003 (0.017) & --- (0.023) & $+0.032$ [0.007, 0.058], 0.012 (0.087) \\
-Concat (TabFM) vs.\ dual (Transformer) & $+0.018$ [0.007, 0.029] & 0.001 (0.008) & --- (0.009) & $+0.028$ [0.004, 0.051], 0.022 (0.134) \\
-Concat (TabFM) vs.\ radiomics-only (RF) & $+0.030$ [0.016, 0.043] & $<0.001$ ($<0.001$) & --- ($<0.001$) & $+0.061$ [0.027, 0.095], $<0.001$ (0.004) \\
-Radiomics-only (TabFM) vs.\ radiomics-only (RF) & $+0.014$ [0.003, 0.025] & 0.014 (0.070) & --- (0.061) & $+0.045$ [0.015, 0.072], 0.002 (0.018) \\
-Clinical-only (TabFM) vs.\ clinical-only (Transformer--CapsNet) & $+0.003$ [$-0.004$, 0.010] & 0.460 (0.921) & --- (0.923) & $-0.015$ [$-0.029$, 0.003], 0.100 (0.370) \\
+Concat (TabFM) vs.\ concat (RF) & $+0.016$ [0.005, 0.026] & 0.003 (0.020) & 0.004 (0.027) & $+0.032$ [0.007, 0.058], 0.012 (0.099) \\
+Concat (TabFM) vs.\ dual (Transformer) & $+0.018$ [0.007, 0.029] & 0.001 (0.010) & 0.001 (0.010) & $+0.028$ [0.004, 0.051], 0.022 (0.157) \\
+Concat (TabFM) vs.\ radiomics-only (RF) & $+0.030$ [0.016, 0.043] & $<0.001$ ($<0.001$) & $<0.001$ ($<0.001$) & $+0.061$ [0.027, 0.095], $<0.001$ (0.005) \\
+Radiomics-only (TabFM) vs.\ radiomics-only (RF) & $+0.014$ [0.003, 0.025] & 0.014 (0.084) & 0.012 (0.073) & $+0.045$ [0.015, 0.072], 0.002 (0.022) \\
+Clinical-only (TabFM) vs.\ clinical-only (Transformer--CapsNet) & $+0.003$ [$-0.004$, 0.010] & 0.460 (1.000) & 0.462 (1.000) & $-0.015$ [$-0.029$, 0.003], 0.100 (0.462) \\
+Dual-fusion (TabFM) vs.\ dual (Transformer) & $+0.018$ [0.007, 0.029] & $<0.001$ (0.004) & $<0.001$ (0.008) & $+0.036$ [0.012, 0.060], 0.002 (0.022) \\
+Dual-fusion (TabFM) vs.\ concat (TabFM) & $+0.000$ [$-0.007$, 0.008] & 0.954 (1.000) & 0.974 (1.000) & $+0.008$ [$-0.009$, 0.025], 0.353 (1.000) \\
 \bottomrule
 \end{tabular}
 }
@@ -763,35 +808,45 @@ Clinical-only (TabFM) vs.\ clinical-only (Transformer--CapsNet) & $+0.003$ [$-0.
 \label{sec:res-center}
 
 Stratifying the pooled out-of-fold predictions by contributing center revealed
-substantial between-center heterogeneity (Table~\ref{tab:center}). This
-analysis retains the Random Forest and Transformer models used before TabFM was
-added to the benchmark, because a per-center evaluation of TabFM was not
-performed; whether the foundation model shows the same site-dependent pattern
-observed below remains to be tested. For the radiomics-only Random Forest,
+substantial between-center heterogeneity that was consistent across model
+families, including TabFM (Table~\ref{tab:center}). For the radiomics-only Random Forest,
 discrimination was high and similar at RUMC (AUROC
 0.835, 95\% CI 0.804--0.863) and ZGT (0.834, 0.784--0.882) but markedly lower at
 PCNN (0.735, 0.678--0.788). The same pattern held for the combined models and was
 statistically significant: PCNN underperformed the other two centers by
 $0.102$ AUROC for the radiomics-only Random Forest (95\% CI 0.041--0.163,
 $P=0.001$), by $0.130$ for the concatenation Random Forest
-($P<0.001$), and by $0.153$ for the dual-branch Transformer ($P<0.001$). Notably,
+($P<0.001$), and by $0.153$ for the dual-branch Transformer ($P<0.001$). The
+best-performing model family, TabFM, showed the same site-dependent pattern
+rather than escaping it: PCNN again lagged RUMC and ZGT in every condition, with
+radiomics-only TabFM reaching AUROC 0.849 (RUMC) and 0.847 (ZGT) but only 0.748
+(PCNN, 95\% CI 0.694--0.799), and the concatenation and dual-fusion TabFM models
+reaching 0.87 at RUMC and ZGT but 0.734 and 0.743 at PCNN
+(Table~\ref{tab:center}). The per-center confidence intervals for TabFM at PCNN
+did not overlap the corresponding RUMC estimates in the combined conditions,
+indicating that the foundation model's aggregate advantage did not close the
+between-center gap. Notably,
 the incremental value of clinical variables was also center-dependent: adding
 clinical variables improved discrimination at RUMC and ZGT but not at PCNN, where
 the combined models were no better than---and for dual-branch fusion slightly
-worse than---the radiomics-only model. Because the cross-validation folds are not
+worse than---the radiomics-only model, a pattern that held for TabFM as well.
+Because the cross-validation folds are not
 center-disjoint, these estimates reflect per-center performance of a
 center-mixed--trained model and not transportability to a wholly unseen center;
 the lower performance at PCNN nonetheless signals that acquisition-site
-characteristics materially affect this radiomic signature and that
+characteristics materially affect this radiomic signature, independent of the
+modelling approach, and that
 center-stratified evaluation is essential before deployment.
 
 \begin{table}[!htbp]
 \centering
 \caption{Discrimination by contributing center on pooled out-of-fold predictions
-for the best model in the radiomics-only, concatenation, and dual-branch
-conditions. Values are point estimates with patient-level cluster-bootstrap 95\%
-confidence intervals. RUMC, Radboud University Medical Center; PCNN, Prostaat
-Centrum Noord-Nederland; ZGT, Ziekenhuisgroep Twente.}
+for the best classical/deep model in the radiomics-only, concatenation, and
+dual-branch conditions, and for TabFM in the radiomics-only, concatenation, and
+dual-stream late-fusion conditions. Values are point estimates with
+patient-level cluster-bootstrap 95\% confidence intervals. RUMC, Radboud
+University Medical Center; PCNN, Prostaat Centrum Noord-Nederland; ZGT,
+Ziekenhuisgroep Twente.}
 \label{tab:center}
 \resizebox{\textwidth}{!}{
 \begin{tabular}{llccc}
@@ -815,6 +870,21 @@ Model & Center & $n$ (csPCa \%) & AUROC & AUPRC \\
  & RUMC & 800 (29.5)  & 0.860 (0.830--0.886) & 0.740 (0.679--0.794) \\
  & ZGT  & 350 (22.9)  & 0.855 (0.807--0.899) & 0.635 (0.520--0.749) \\
  & PCNN & 350 (31.1)  & 0.706 (0.648--0.761) & 0.493 (0.405--0.598) \\
+\midrule
+\multirow{3}{*}{Radiomics-only (TabFM)}
+ & RUMC & 800 (29.5)  & 0.849 (0.818--0.877) & 0.696 (0.634--0.759) \\
+ & ZGT  & 350 (22.9)  & 0.847 (0.792--0.896) & 0.667 (0.569--0.772) \\
+ & PCNN & 350 (31.1)  & 0.748 (0.694--0.799) & 0.557 (0.468--0.658) \\
+\midrule
+\multirow{3}{*}{Radiomics$+$clinical concat (TabFM)}
+ & RUMC & 800 (29.5)  & 0.872 (0.844--0.898) & 0.739 (0.678--0.804) \\
+ & ZGT  & 350 (22.9)  & 0.874 (0.826--0.915) & 0.700 (0.593--0.803) \\
+ & PCNN & 350 (31.1)  & 0.734 (0.677--0.785) & 0.519 (0.436--0.628) \\
+\midrule
+\multirow{3}{*}{Radiomics$+$clinical late fusion (TabFM)}
+ & RUMC & 800 (29.5)  & 0.874 (0.847--0.901) & 0.768 (0.714--0.821) \\
+ & ZGT  & 350 (22.9)  & 0.870 (0.822--0.915) & 0.692 (0.586--0.788) \\
+ & PCNN & 350 (31.1)  & 0.743 (0.688--0.794) & 0.530 (0.443--0.636) \\
 \bottomrule
 \end{tabular}
 }
@@ -868,25 +938,33 @@ radiomic space; despite this, one diffusion-weighted gray-level co-occurrence
 feature (wavelet-filtered correlation) ranked among the fifteen most important
 features of every model, a signature shared across classical and deep
 architectures. Because TabFM performs inference by in-context learning rather
-than by a differentiable forward pass over a fixed set of weights, neither SHAP
-nor integrated gradients could be computed for it, and its contribution was
-instead characterized by the same model-agnostic permutation importance used as
-a common currency across the other six models. TabFM was evaluated on the
-identical fold-specific feature-selection plan as the classical and deep
-models, so its importance ranking is directly comparable in terms of the
-candidate features considered, even though the underlying attribution method
-differs. The permutation-importance drops for TabFM were uniformly small (all
-within $\pm 0.002$ AUROC and $\pm 0.013$ AUPRC), consistent with the redundancy
-already observed across the radiomic feature space; the leading features by
-AUROC drop were diffusion-weighted descriptors already prominent in the other
-models' rankings, including a Laplacian-of-Gaussian-filtered first-order
-skewness, an exponential-filtered gray-level co-occurrence informational
-measure of correlation (Imc1), and an exponential-filtered gray-level
-variance, again pointing to diffusion-weighted texture and first-order
-statistics as the dominant, model-agnostic signal. Finally, a selected
+than by a differentiable forward pass over a fixed set of weights, it was
+attributed with model-agnostic permutation SHAP computed on a held-out
+subsample of each fold, in the radiomics-only, clinical-only, and concatenation
+conditions (Supplementary Material, Figure~S1). Reassuringly, TabFM recovered the same
+signature as the other model families using this independent attribution
+method. In the radiomics-only condition its most influential features were the
+ADC square-root first-order total energy and diffusion-weighted texture,
+including the wavelet-filtered DWI gray-level co-occurrence correlation feature
+that ranked among the top fifteen of every other model, together with DWI
+gray-level non-uniformity and informational measure of correlation (Imc2) and
+ADC gray-level non-uniformity. In the clinical-only condition PSA density was by
+a wide margin the most important variable, followed by age and prostate volume,
+in the expected directions (higher PSA density and age, and lower prostate
+volume, increasing the predicted probability). Most tellingly, in the
+concatenation condition PSA density and age rose to the top two positions ahead
+of every radiomic descriptor, exactly reproducing the re-ranking observed for
+the classical and deep combined models and confirming, with a sample-resolved
+attribution method, that the clinical variables contribute largely independent
+risk information rather than refining the imaging signal. These SHAP
+attributions were computed on a modest per-fold subsample and so are
+qualitative rather than a basis for fine-grained ranking, but their agreement
+with the classical and deep analyses reinforces that a single, biologically
+coherent radiomic-plus-clinical signature drives prediction across every model
+family, including the foundation model. Finally, a selected
 set of influential features was back-projected to the image as voxel-level maps
 in csPCa-positive cases with human-expert lesion delineations
-(Figure~\ref{fig:featuremaps}).
+(Supplementary Material, Figure~S2).
 The displayed set retained the ADC square-root first-order total-energy map and
 the recurrent DWI Imc texture features, and added a DWI LoG first-order skewness
 map and a DWI square GLRLM gray-level non-uniformity map to capture complementary
@@ -935,40 +1013,6 @@ while overall feature-level agreement is moderate.}
 \label{fig:concordance}
 \end{figure}
 
-\begin{figure}[!htbp]
-\centering
-\begin{subfigure}[t]{0.49\textwidth}
-    \centering
-    \safeinclude[width=\linewidth]{fig_feature_maps_10322_1000328_map_only.png}
-    \caption{Case 10322\_1000328.}
-\end{subfigure}\hfill
-\begin{subfigure}[t]{0.49\textwidth}
-    \centering
-    \safeinclude[width=\linewidth]{fig_feature_maps_11377_1001400_map_only.png}
-    \caption{Case 11377\_1001400.}
-\end{subfigure}
-
-\vspace{0.5em}
-\begin{subfigure}[t]{0.49\textwidth}
-    \centering
-    \safeinclude[width=\linewidth]{fig_feature_maps_10383_1000389_map_only.png}
-    \caption{Case 10383\_1000389.}
-\end{subfigure}
-\caption{\textbf{Original DWI and prostate-centered voxel-based radiomic maps in
-csPCa-positive cases with human-expert lesion delineations.} In each subfigure,
-(A)~original DWI slice with prostate
-gland (cyan) and csPCa lesion (green) delineations only; (B)~ADC square-root
-first-order total energy, (C)~DWI exponential GLCM Imc1, (D)~DWI LoG 3 mm
-first-order skewness, (E)~DWI wavelet GLCM Imc2, and (F)~DWI square GLRLM
-gray-level non-uniformity. Feature panels show only the voxel map within a
-prostate-centered bounding box, with the gland and lesion contours retained.
-Colour encodes voxel-based feature value on a per-feature relative scale
-(low to high). Panel titles indicate the feature direction from the signed
-SHAP/integrated-gradient beeswarm analyses: lower values support the positive
-csPCa class for B--D and F, whereas higher values support the positive csPCa
-class for E.}
-\label{fig:featuremaps}
-\end{figure}
 %% ---------------------------------------------------------------
 %% ---------------------------------------------------------------
 %% ---------------------------------------------------------------
@@ -988,11 +1032,11 @@ Notably, the deep models were selected precisely for their stronger inductive
 biases (explicit feature-interaction modeling via attention, and part--whole
 representation via capsule routing)---yet these did not translate into higher
 discrimination under the implemented training protocol. Second, TabFM
-numerically outranked every classical and deep model in the radiomics-only,
-clinical-only, and concatenation conditions, and its gain over the previous
-best concatenation model was statistically significant after Holm adjustment,
-even though its radiomics-only advantage over the Random Forest was not.
-Because a random-weight control that preserved TabFM's architecture and
+numerically outranked every classical and deep model in all four conditions,
+and its gains over the previous best concatenation and dual-branch models were
+each statistically significant after Holm adjustment, even though its
+radiomics-only advantage over the Random Forest was not. Because a
+random-weight control that preserved TabFM's architecture and
 in-context-learning procedure while discarding its pretrained parameters
 collapsed to near-chance discrimination, this advantage should be attributed to
 the model's pretraining across heterogeneous tabular tasks rather than to its
@@ -1004,9 +1048,13 @@ PSA density, and prostate volume
 to radiomics by simple concatenation produced a small improvement in AUROC and
 AUPRC that remained significant after Holm adjustment for every model family
 tested, including the classical Random Forest and, more strongly, TabFM,
-whereas dual-branch fusion (for which TabFM was not evaluated) gave no
-demonstrated benefit over simple feature concatenation among the architectures
-in which both were compared. The interpretability analysis added a further
+whereas dual-branch fusion gave no demonstrated benefit over simple feature
+concatenation among the architectures in which both were compared, classical,
+deep, and TabFM alike---for TabFM, the dual-stream late fusion and simple
+concatenation results were statistically indistinguishable from each other,
+mirroring the pattern seen for the classical and deep architectures even though
+TabFM's dual-stream mechanism was architecturally distinct from their
+shared-dense-classifier fusion. The interpretability analysis added a further
 dimension to these benchmark results: the
 selected radiomic signature was compact and highly reproducible across folds, was
 dominated by diffusion-weighted texture with a smaller but consistent ADC
@@ -1116,14 +1164,10 @@ models incorporated PI-RADS scores and extended clinical predictors~\citep{Antol
 By deliberately omitting PI-RADS to isolate the whole-gland radiomic signal, our results
 demonstrate that a parsimonious set of routine variables still adds incremental
 predictive information, and that this holds even for the strongest model in the
-benchmark: TabFM's concatenation result was its single best result overall.
-Among the classical and deep architectures for which both fusion strategies
-were compared, the lack of benefit from dual-branch fusion over simple
-concatenation further emphasizes that a more complex architecture does not
-necessarily add value when combining data streams that carry largely distinct
-risk profiles; because TabFM was not evaluated in the dual-branch condition,
-whether a foundation model could better exploit an explicitly separated
-clinical representation remains an open question.
+benchmark, where TabFM's concatenation and dual-stream late-fusion results were
+its best overall and statistically tied. As already noted, no elaborate fusion
+strategy beat simple concatenation in any model family, so the incremental value
+of the clinical variables is best captured by the parsimonious combined model.
 
 The study has limitations. It was a retrospective analysis without external
 validation; all estimates are multicenter internal cross-validation on a single
@@ -1153,19 +1197,22 @@ or independent validation is needed for confirmatory inference. TabFM introduces
 further, model-specific caveats: it was added to the benchmark after the
 classical and deep architectures had already been selected and evaluated, so
 its contrasts form a separate statistical family and it did not go through the
-same twelve-algorithm screening process; it was not evaluated in the
-dual-branch or per-center analyses, so its behaviour under those conditions is
-unknown; and because it is not amenable to SHAP or integrated-gradient
-attribution, its interpretability could only be assessed by permutation
-importance, a coarser and less sample-resolved tool than the attribution
-methods used for the other models. The provenance and scope of TabFM's
+same twelve-algorithm screening process; its combined-modality result in the
+dual condition used a logistic late-fusion of two independently in-context
+TabFM streams rather than the shared-dense-classifier dual-branch architecture
+used for the classical and deep models, so the ``dual'' label does not denote
+the same architecture across model families; and its SHAP attributions, while
+methodologically comparable to those of the other models, were computed on a
+modest per-fold held-out subsample and are therefore best read as a qualitative
+cross-check rather than a fine-grained ranking. The provenance and scope of TabFM's
 pretraining corpus--and therefore the risk that it overlaps, even indirectly,
 with public tabular benchmarks--cannot be fully audited from the outside, which
 should be weighed when interpreting its advantage over models trained only on
 this cohort. Future work
 should include external and prospective validation,
 lesion-level and zonal feature extraction, richer clinical variables,
-dual-branch and per-center evaluation of tabular foundation models, and
+a shared-dense-classifier dual-branch implementation of tabular foundation
+models directly comparable to the classical and deep architectures, and
 prospective evaluation within a clinical decision pathway~\citep{Quality2022,Lucia2024}.
 
 %% ---------------------------------------------------------------
@@ -1180,25 +1227,31 @@ every deep tabular pipeline trained from scratch on radiomics-only data, and
 the specified Random Forest--Transformer difference was not significant after
 multiplicity adjustment; this result does not establish an architectural
 advantage for classical models. A pretrained tabular foundation model, TabFM,
-numerically outranked the Random Forest and every deep pipeline in the
-radiomics-only, clinical-only, and concatenation conditions, and its gain in
-the concatenation condition was statistically significant after multiplicity
-adjustment; a random-weight control confirmed that this advantage came from
-TabFM's pretrained parameters rather than from its architecture alone.
-Classical tree ensembles therefore remain essential, highly competitive
-reference models for radiomics studies, and may offer a more parsimonious
-choice when sample size is moderate and the feature space is structured and
-tabular, while pretrained tabular foundation models emerge from this benchmark
-as a promising, if more complex, alternative worth further scrutiny.
+numerically outranked the Random Forest and every deep pipeline in all four
+conditions tested, and its gains in the concatenation and combined-modality
+conditions were each statistically significant after multiplicity adjustment;
+a random-weight control confirmed that this advantage came from TabFM's
+pretrained parameters rather than from its architecture alone. Classical tree
+ensembles therefore remain essential, highly competitive reference models for
+radiomics studies, and may offer a more parsimonious choice when sample size is
+moderate and the feature space is structured and tabular, while pretrained
+tabular foundation models emerge from this benchmark as a promising, if more
+complex, alternative worth further scrutiny.
 
 Routine clinical variables supplied complementary information across every
 model family tested. Adding age, PSA, PSA density, and prostate volume to the
 radiomic signature produced a modest but statistically supported improvement,
 particularly in AUPRC, and this improvement was most pronounced when the
 combined features were passed to TabFM, which achieved the best overall
-discrimination in the study; a dual-branch fusion architecture, evaluated only
-for the classical and deep models, did not outperform straightforward feature
-concatenation. Together with the interpretability analyses, these results
+discrimination in the study whether by simple concatenation or by a
+dual-stream late fusion of separately trained radiomics-only and clinical-only
+TabFM streams---the two were statistically indistinguishable from each other.
+Consistent with this, a shared-dense-classifier dual-branch fusion
+architecture, evaluated for the classical and deep models, likewise did not
+outperform straightforward feature concatenation, so across every model family
+in which more than one combination strategy was tested, added fusion
+complexity conferred no demonstrated benefit over simple concatenation.
+Together with the interpretability analyses, these results
 indicate that diffusion-weighted texture and ADC-derived descriptors capture a
 reproducible imaging phenotype, whereas PSA density and the other clinical
 variables contribute additional risk information that is not fully represented
@@ -1215,9 +1268,10 @@ patient populations, and should assess performance at clinically prespecified
 decision thresholds. Future studies should also determine whether lesion-level
 or zonal radiomics, additional clinical predictors, or longitudinal information
 provide gains that justify their added complexity, and should extend the
-foundation-model comparison introduced here to the dual-branch fusion
-architecture, to per-center evaluation, and to external cohorts, where the
-durability of TabFM's pretraining advantage remains to be established. Until
+foundation-model comparison introduced here to a shared-dense-classifier
+dual-branch architecture directly comparable to the classical and deep models,
+and to external cohorts, where the durability of TabFM's pretraining advantage
+remains to be established. Until
 such validation is available, the present work should be interpreted as a
 rigorous comparative benchmark and as evidence that both a relatively simple,
 calibrated, interpretable classical model and a pretrained tabular foundation

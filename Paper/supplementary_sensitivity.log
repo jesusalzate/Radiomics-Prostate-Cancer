@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.28 (TeX Live 2025) (preloaded format=pdflatex 2026.1.26)  18 JUN 2026 12:31
+This is pdfTeX, Version 3.141592653-2.6-1.40.28 (TeX Live 2025) (preloaded format=pdflatex 2026.1.26)  2 JUL 2026 12:25
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -313,31 +313,38 @@ Package caption Info: Standard document class detected.
 \c@continuedfloat=\count316
 Package caption Info: hyperref package is loaded.
 )
+(/usr/local/texlive/2025/texmf-dist/tex/latex/caption/subcaption.sty
+Package: subcaption 2023/07/28 v1.6b Sub-captions (AR)
+Package caption Info: New subtype `subfigure' on input line 238.
+\c@subfigure=\count317
+Package caption Info: New subtype `subtable' on input line 238.
+\c@subtable=\count318
+)
 (/usr/local/texlive/2025/texmf-dist/tex/latex/l3backend/l3backend-pdftex.def
 File: l3backend-pdftex.def 2025-10-09 L3 backend support: PDF output (pdfTeX)
-\l__color_backend_stack_int=\count317
+\l__color_backend_stack_int=\count319
 )
 (./supplementary_sensitivity.aux)
 \openout1 = `supplementary_sensitivity.aux'.
 
-LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 36.
-LaTeX Font Info:    ... okay on input line 36.
-LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 36.
-LaTeX Font Info:    ... okay on input line 36.
-LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 36.
-LaTeX Font Info:    ... okay on input line 36.
-LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 36.
-LaTeX Font Info:    ... okay on input line 36.
-LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 36.
-LaTeX Font Info:    ... okay on input line 36.
-LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 36.
-LaTeX Font Info:    ... okay on input line 36.
-LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 36.
-LaTeX Font Info:    ... okay on input line 36.
-LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 36.
-LaTeX Font Info:    ... okay on input line 36.
-LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 36.
-LaTeX Font Info:    ... okay on input line 36.
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 38.
+LaTeX Font Info:    ... okay on input line 38.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 38.
+LaTeX Font Info:    ... okay on input line 38.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 38.
+LaTeX Font Info:    ... okay on input line 38.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 38.
+LaTeX Font Info:    ... okay on input line 38.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 38.
+LaTeX Font Info:    ... okay on input line 38.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 38.
+LaTeX Font Info:    ... okay on input line 38.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 38.
+LaTeX Font Info:    ... okay on input line 38.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 38.
+LaTeX Font Info:    ... okay on input line 38.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 38.
+LaTeX Font Info:    ... okay on input line 38.
 
 *geometry* driver: auto-detecting
 *geometry* detected driver: pdftex
@@ -375,16 +382,16 @@ LaTeX Font Info:    ... okay on input line 36.
 
 (/usr/local/texlive/2025/texmf-dist/tex/context/base/mkii/supp-pdf.mkii
 [Loading MPS to PDF converter (version 2006.09.02).]
-\scratchcounter=\count318
+\scratchcounter=\count320
 \scratchdimen=\dimen194
 \scratchbox=\box55
-\nofMPsegments=\count319
-\nofMParguments=\count320
+\nofMPsegments=\count321
+\nofMParguments=\count322
 \everyMPshowfont=\toks24
-\MPscratchCnt=\count321
+\MPscratchCnt=\count323
 \MPscratchDim=\dimen195
-\MPnumerator=\count322
-\makeMPintoPDFobject=\count323
+\MPnumerator=\count324
+\makeMPintoPDFobject=\count325
 \everyMPtoPDFconversion=\toks25
 ) (/usr/local/texlive/2025/texmf-dist/tex/latex/epstopdf-pkg/epstopdf-base.sty
 Package: epstopdf-base 2020-01-24 v2.11 Base part for package epstopdf
@@ -395,7 +402,7 @@ Package epstopdf-base Info: Redefining graphics rule for `.eps' on input line 4
 File: epstopdf-sys.cfg 2010/07/13 v1.3 Configuration of (r)epstopdf for TeX Liv
 e
 ))
-Package hyperref Info: Link coloring OFF on input line 36.
+Package hyperref Info: Link coloring OFF on input line 38.
 
 (./supplementary_sensitivity.out) (./supplementary_sensitivity.out)
 \@outlinefile=\write3
@@ -410,33 +417,68 @@ LaTeX Warning: No \author given.
 [1
 
 {/usr/local/texlive/2025/texmf-var/fonts/map/pdftex/updmap/pdftex.map}]
-[2] (./supplementary_sensitivity.aux)
+[2]
+<figures/fig_tabfm_shap.png, id=40, 748.2354pt x 271.37386pt>
+File: figures/fig_tabfm_shap.png Graphic file (type png)
+<use figures/fig_tabfm_shap.png>
+Package pdftex.def Info: figures/fig_tabfm_shap.png  used on input line 177.
+(pdftex.def)             Requested size: 469.75502pt x 170.37428pt.
+<figures/fig_feature_maps_10322_1000328_map_only.png, id=43, 693.792pt x 476.98
+2pt>
+File: figures/fig_feature_maps_10322_1000328_map_only.png Graphic file (type pn
+g)
+<use figures/fig_feature_maps_10322_1000328_map_only.png>
+Package pdftex.def Info: figures/fig_feature_maps_10322_1000328_map_only.png  u
+sed on input line 207.
+(pdftex.def)             Requested size: 230.18253pt x 158.2488pt.
+<figures/fig_feature_maps_11377_1001400_map_only.png, id=44, 693.792pt x 476.98
+2pt>
+File: figures/fig_feature_maps_11377_1001400_map_only.png Graphic file (type pn
+g)
+<use figures/fig_feature_maps_11377_1001400_map_only.png>
+Package pdftex.def Info: figures/fig_feature_maps_11377_1001400_map_only.png  u
+sed on input line 212.
+(pdftex.def)             Requested size: 230.18253pt x 158.2488pt.
+<figures/fig_feature_maps_10383_1000389_map_only.png, id=45, 693.792pt x 476.98
+2pt>
+File: figures/fig_feature_maps_10383_1000389_map_only.png Graphic file (type pn
+g)
+<use figures/fig_feature_maps_10383_1000389_map_only.png>
+Package pdftex.def Info: figures/fig_feature_maps_10383_1000389_map_only.png  u
+sed on input line 219.
+(pdftex.def)             Requested size: 230.18253pt x 158.2488pt.
+ [3 <./figures/fig_tabfm_shap.png>] [4 <./figures/fig_feature_maps_10322_100032
+8_map_only.png> <./figures/fig_feature_maps_11377_1001400_map_only.png> <./figu
+res/fig_feature_maps_10383_1000389_map_only.png>]
+(./supplementary_sensitivity.aux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-01-19>
  ***********
 Package rerunfilecheck Info: File `supplementary_sensitivity.out' has not chang
 ed.
-(rerunfilecheck)             Checksum: E09CF8323368312DD587F5112F9BF369;559.
+(rerunfilecheck)             Checksum: B518B79B1A39FEFBF1A04D871FF3117E;1467.
  ) 
 Here is how much of TeX's memory you used:
- 11117 strings out of 467533
- 176476 string characters out of 5419489
- 605511 words of memory out of 5000000
- 39913 multiletter control sequences out of 15000+600000
- 634482 words of font info for 63 fonts, out of 8000000 for 9000
+ 11291 strings out of 467533
+ 180807 string characters out of 5419489
+ 616293 words of memory out of 5000000
+ 40075 multiletter control sequences out of 15000+600000
+ 635089 words of font info for 65 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,12n,79p,663b,471s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,12n,79p,1056b,591s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb
 ></usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb>
-</usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb><
-/usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></u
-sr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb></usr
-/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmti10.pfb>
-Output written on supplementary_sensitivity.pdf (2 pages, 81983 bytes).
+</usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx9.pfb></
+usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></u
+sr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr
+/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb></usr/l
+ocal/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr9.pfb></usr/loca
+l/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmti10.pfb>
+Output written on supplementary_sensitivity.pdf (4 pages, 1670822 bytes).
 PDF statistics:
- 54 PDF objects out of 1000 (max. 8388607)
- 37 compressed objects within 1 object stream
- 5 named destinations out of 1000 (max. 500000)
- 9 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 102 PDF objects out of 1000 (max. 8388607)
+ 71 compressed objects within 1 object stream
+ 13 named destinations out of 1000 (max. 500000)
+ 53 words of extra memory for PDF output out of 10000 (max. 10000000)
 

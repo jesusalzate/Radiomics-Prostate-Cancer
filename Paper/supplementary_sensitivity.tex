@@ -10,6 +10,7 @@
 
 \usepackage[margin=1in]{geometry}
 \usepackage{graphicx}
+\graphicspath{{figures/}{./}}
 \usepackage{booktabs}
 \usepackage{multirow}
 \usepackage{amsmath}
@@ -17,6 +18,7 @@
 \usepackage{parskip}
 \usepackage{setspace}
 \usepackage{caption}
+\usepackage{subcaption}
 
 \setstretch{1.15}
 \setlength{\parindent}{0pt}
@@ -110,5 +112,127 @@ Condition & Model (protocol) & AUROC & AUPRC & Brier \\
 \end{tabular}
 }
 \end{table}
+
+%% ---------------------------------------------------------------
+\section{Radiomics-only per-model operating-point performance}
+\label{app:radiomicsonly}
+
+Table~\ref{tab:radiomics_only_main} reports the full set of discrimination,
+calibration, and operating-point metrics for all seven radiomics-only models,
+complementing the forest plot of AUROC and AUPRC in the main text. Threshold-free
+metrics (AUROC, AUPRC, Brier) use the calibrated probabilities; sensitivity,
+specificity, balanced accuracy, F1, PPV, and NPV are reported at the per-fold
+outer-training-derived Youden operating point. Values are point estimates with
+patient-level cluster-bootstrap 95\% confidence intervals for AUROC, AUPRC,
+sensitivity, and specificity (lower Brier is better).
+
+\begin{table}[htbp]
+\centering
+\caption{Radiomics-only model performance on pooled out-of-fold predictions.}
+\label{tab:radiomics_only_main}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{lccccccccc}
+\toprule
+Model & AUROC & AUPRC & Brier & Sensitivity & Specificity & Bal.\ acc. & F1 & PPV & NPV \\
+\midrule
+TabFM (foundation) & 0.828 (0.805--0.850) & 0.650 (0.600--0.699) & 0.145 & 0.812 (0.774--0.848) & 0.691 (0.664--0.718) & 0.751 & 0.626 & 0.510 & 0.903 \\
+Random Forest (ML) & 0.814 (0.790--0.837) & 0.605 (0.556--0.658) & 0.152 & 0.767 (0.724--0.806) & 0.736 (0.710--0.761) & 0.751 & 0.630 & 0.534 & 0.889 \\
+Gradient Boosting (ML) & 0.802 (0.777--0.825) & 0.592 (0.542--0.644) & 0.156 & 0.774 (0.733--0.813) & 0.675 (0.647--0.703) & 0.725 & 0.597 & 0.485 & 0.883 \\
+Transformer (DL) & 0.801 (0.775--0.824) & 0.609 (0.559--0.662) & 0.155 & 0.755 (0.714--0.795) & 0.684 (0.657--0.711) & 0.720 & 0.591 & 0.486 & 0.876 \\
+Transformer--CapsNet (DL) & 0.803 (0.777--0.826) & 0.600 (0.550--0.651) & 0.154 & 0.807 (0.768--0.843) & 0.672 (0.644--0.699) & 0.739 & 0.612 & 0.493 & 0.898 \\
+LightGBM (ML) & 0.792 (0.767--0.817) & 0.598 (0.548--0.650) & 0.159 & 0.791 (0.751--0.830) & 0.672 (0.644--0.700) & 0.731 & 0.603 & 0.488 & 0.890 \\
+CapsNet (DL) & 0.794 (0.768--0.820) & 0.589 (0.539--0.643) & 0.155 & 0.753 (0.710--0.793) & 0.685 (0.658--0.712) & 0.719 & 0.590 & 0.486 & 0.875 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+%% ---------------------------------------------------------------
+\section{Model-agnostic SHAP attributions for the pretrained TabFM model}
+\label{app:tabfmshap}
+
+Because TabFM performs inference by in-context learning rather than through a
+differentiable forward pass over fixed weights, gradient-based attribution
+methods such as integrated gradients are not applicable. To characterize which
+features drove its predictions, model-agnostic permutation
+SHAP was instead computed for the pretrained TabFM model in the radiomics-only,
+clinical-only, and concatenation conditions. For each of the five outer folds,
+SHAP values were estimated on a held-out subsample of 25 validation studies
+against a 50-study background set, and the resulting per-study signed
+attributions were pooled across folds (Figure~\ref{fig:tabfmshap}). The
+subsample size makes these attributions qualitative rather than a basis for
+fine-grained ranking, but they were computed with an attribution method
+independent of those used for the classical (SHAP) and deep (integrated
+gradient) models and therefore provide a cross-check on the shared feature
+signature. TabFM's leading features closely matched those of the other model
+families: diffusion-weighted texture and ADC first-order total energy dominated
+the radiomics-only condition, PSA density dominated the clinical-only condition,
+and in the concatenation condition PSA density and age rose above every radiomic
+descriptor---reproducing the re-ranking seen for the classical and deep combined
+models and confirming that the clinical variables supply largely independent
+risk information.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{fig_tabfm_shap.png}
+\caption{\textbf{Model-agnostic SHAP attributions for the pretrained TabFM
+model.} Beeswarm summaries of per-study signed permutation-SHAP values, pooled
+across the five outer folds' held-out subsamples, for the eight most important
+features in the (A) radiomics-only, (B) clinical-only, and (C) concatenation
+conditions. Each point is a study, positioned by its signed SHAP value and
+colored by the relative feature value (low to high); values to the right of
+zero increase the predicted csPCa probability. PSA density is the leading
+feature in the clinical-only and concatenation conditions, and diffusion-weighted
+texture with ADC first-order total energy leads the radiomics-only condition,
+matching the signature recovered by the classical and deep models with
+independent attribution methods.}
+\label{fig:tabfmshap}
+\end{figure}
+
+%% ---------------------------------------------------------------
+\section{Voxel-based radiomic feature maps}
+\label{app:featuremaps}
+
+To provide case-level spatial explanations directly on the anatomy, a selected
+set of influential features was back-projected to the image as voxel-wise
+radiomic maps in csPCa-positive cases with human-expert lesion delineations
+(Figure~\ref{fig:featuremaps}). Their salient regions co-localized with the
+delineated csPCa lesion rather than being distributed uniformly through the
+gland, complementing the global importance summaries in the main text.
+
+\begin{figure}[htbp]
+\centering
+\begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{fig_feature_maps_10322_1000328_map_only.png}
+    \caption{Case 10322\_1000328.}
+\end{subfigure}\hfill
+\begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{fig_feature_maps_11377_1001400_map_only.png}
+    \caption{Case 11377\_1001400.}
+\end{subfigure}
+
+\vspace{0.5em}
+\begin{subfigure}[t]{0.49\textwidth}
+    \centering
+    \includegraphics[width=\linewidth]{fig_feature_maps_10383_1000389_map_only.png}
+    \caption{Case 10383\_1000389.}
+\end{subfigure}
+\caption{\textbf{Original DWI and prostate-centered voxel-based radiomic maps in
+csPCa-positive cases with human-expert lesion delineations.} In each subfigure,
+(A)~original DWI slice with prostate
+gland (cyan) and csPCa lesion (green) delineations only; (B)~ADC square-root
+first-order total energy, (C)~DWI exponential GLCM Imc1, (D)~DWI LoG 3 mm
+first-order skewness, (E)~DWI wavelet GLCM Imc2, and (F)~DWI square GLRLM
+gray-level non-uniformity. Feature panels show only the voxel map within a
+prostate-centered bounding box, with the gland and lesion contours retained.
+Colour encodes voxel-based feature value on a per-feature relative scale
+(low to high). Panel titles indicate the feature direction from the signed
+SHAP/integrated-gradient beeswarm analyses: lower values support the positive
+csPCa class for B--D and F, whereas higher values support the positive csPCa
+class for E.}
+\label{fig:featuremaps}
+\end{figure}
 
 \end{document}

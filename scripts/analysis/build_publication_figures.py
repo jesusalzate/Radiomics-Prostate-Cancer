@@ -93,7 +93,7 @@ BEST_PER_CONDITION = [
     ("Clinical-only", "TabFM pretrained", "Clinical-only"),
     ("Radiomics-only", "TabFM pretrained", "Radiomics-only"),
     ("Radiomics+Clinical-concat", "TabFM pretrained", "Radiomics+clinical (concat)"),
-    ("Radiomics+Clinical-dual", "dual_transformer", "Radiomics+clinical (dual)"),
+    ("Radiomics+Clinical-dual", "TabFM pretrained dual-fusion", "Radiomics+clinical (dual)"),
 ]
 
 
@@ -277,6 +277,47 @@ def fig_model_comparison(out_dir, boot_csv):
     panel_label(axes[0], "A"); panel_label(axes[1], "B")
     fig.tight_layout()
     save(fig, out_dir, "fig_model_comparison")
+
+
+# Radiomics-only forest plot: model family -> (csv label, display, is_foundation).
+_RADIOMICS_FOREST = [
+    ("TabFM pretrained", "TabFM (foundation)", True),
+    ("Random Forest", "Random Forest (ML)", False),
+    ("Transformer-CapsNet", "Transformer-CapsNet (DL)", False),
+    ("Gradient Boosting", "Gradient Boosting (ML)", False),
+    ("Transformer", "Transformer (DL)", False),
+    ("CapsNet", "CapsNet (DL)", False),
+    ("LightGBM", "LightGBM (ML)", False),
+]
+
+
+def fig_radiomics_forest(out_dir, thresh_csv):
+    """Forest plot of AUROC and AUPRC (patient-bootstrap CIs) for the seven
+    radiomics-only models, ordered by AUROC."""
+    d = pd.read_csv(thresh_csv).set_index("model")
+    order = sorted(_RADIOMICS_FOREST, key=lambda m: d.loc[m[0], "auroc"], reverse=True)
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 3.0))
+    for ax, metric, mlabel in zip(axes, ["auroc", "auprc"], ["AUROC", "AUPRC"]):
+        ys = np.arange(len(order))[::-1]
+        for y, (key, disp, is_fm) in zip(ys, order):
+            r = d.loc[key]
+            est, lo, hi = r[metric], r[f"{metric}_lo"], r[f"{metric}_hi"]
+            color = "#D55E00" if is_fm else "#0072B2"
+            ax.errorbar(est, y, xerr=[[est - lo], [hi - est]], fmt="o",
+                        color=color, ms=5, capsize=3, lw=1.4)
+            ax.text(hi + 0.006, y, f"{est:.3f}", va="center", fontsize=6.5)
+        ax.set_yticks(ys)
+        ax.set_yticklabels([m[1] for m in order] if metric == "auroc" else [])
+        ax.set_xlabel(mlabel + " (95% CI)")
+        ax.grid(axis="x", color="0.9", lw=0.6)
+        ax.set_axisbelow(True)
+        lo_all = min(d.loc[m[0], f"{metric}_lo"] for m in order)
+        hi_all = max(d.loc[m[0], f"{metric}_hi"] for m in order)
+        pad = (hi_all - lo_all) * 0.12
+        ax.set_xlim(lo_all - pad, hi_all + pad * 3)
+    panel_label(axes[0], "A"); panel_label(axes[1], "B")
+    fig.tight_layout()
+    save(fig, out_dir, "fig_radiomics_forest")
 
 
 _CLINICAL_LABELS = {

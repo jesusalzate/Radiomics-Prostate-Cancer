@@ -1,0 +1,20 @@
+train_deep:
+  csv: results/radiomics/picai1500_corr/features/features_clinical_only.csv
+  data_pre: artifacts/radiomics
+  output_dir: results/revision_experiments/loco/dl/clinical_only
+  run_prefix: revision_loco_clinical_only_refit
+  architectures:
+    - transformer
+    - capsnet
+    - transformer_capsnet
+  feature_selection: none
+  predefined_folds_json: results/revision_experiments/inputs/center_loco_folds.json
+  predefined_fold_id_type: sample_id
+  batch_size: 16
+  epochs: 300
+  patience: 50
+  threshold_strategy: validation_youden
+  probability_calibration: sigmoid
+  fold_validation_mode: inner_val
+  final_refit_on_outer_train: true
+  resume_existing_folds: true

@@ -317,10 +317,10 @@ def summarize_fold_plan(fold_plan: list[dict], sample_ids: np.ndarray) -> pd.Dat
     return pd.DataFrame(summary_rows)
 
 
-def get_models(random_state: int = 42):
+def get_models(random_state: int = 42, imputer_strategy: str = "median"):
     """Build the classifier pipelines used in the radiomics comparison."""
 
-    base_steps = [SimpleImputer(strategy="median"), StandardScaler(), VarianceThreshold()]
+    base_steps = [SimpleImputer(strategy=imputer_strategy), StandardScaler(), VarianceThreshold()]
 
     models = [
         (
@@ -1766,6 +1766,15 @@ def main():
         ),
     )
     parser.add_argument(
+        "--imputer_strategy",
+        choices=["median", "mean"],
+        default="median",
+        help=(
+            "Fold-local SimpleImputer strategy used inside each sklearn pipeline. "
+            "The default preserves the primary analysis; revision sensitivity runs can use mean."
+        ),
+    )
+    parser.add_argument(
         "--calibration_inner_splits",
         type=int,
         default=3,
@@ -2044,7 +2053,8 @@ def main():
             f"probability_calibration={args.probability_calibration}, "
             f"threshold_strategy={args.threshold_strategy}, "
             f"classification_threshold={args.classification_threshold}, "
-            f"calibration_inner_splits={args.calibration_inner_splits}"
+            f"calibration_inner_splits={args.calibration_inner_splits}, "
+            f"imputer_strategy={args.imputer_strategy}"
         )
         if args.experiment_name:
             log_progress(f"Experiment name: {sanitize_experiment_name(args.experiment_name)}")
@@ -2053,7 +2063,10 @@ def main():
         predictions_data = []
         feature_selection_records = []
         completed_model_names: list[str] = []
-        models = get_models(random_state=DEFAULT_BASE_RANDOM_STATE)
+        models = get_models(
+            random_state=DEFAULT_BASE_RANDOM_STATE,
+            imputer_strategy=args.imputer_strategy,
+        )
         available_model_names = [model_name for model_name, _ in models]
 
         selected_model_names = None

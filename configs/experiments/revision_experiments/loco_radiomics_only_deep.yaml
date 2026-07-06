@@ -1,0 +1,28 @@
+train_deep:
+  csv: artifacts/radiomics/concatenated_data/features_all_gland.csv
+  data_pre: artifacts/radiomics
+  output_dir: results/revision_experiments/loco/dl/radiomics_only
+  run_prefix: revision_loco_radiomics_only_refit
+  architectures:
+    - transformer
+    - capsnet
+    - transformer_capsnet
+  feature_selection: most_discriminant
+  predefined_folds_json: results/revision_experiments/inputs/center_loco_folds.json
+  shared_feature_folds_json: results/revision_experiments/loco/ml/radiomics_only/most_discriminant/gland/revision_loco_radiomics_only_ml/shared_fold_feature_plan.json
+  predefined_fold_id_type: sample_id
+  min_features: 30
+  max_features_cap: 100
+  samples_per_feature: 15
+  minority_samples_per_feature: 5
+  fdr_alpha: 0.05
+  correlation_threshold: 0.95
+  selection_n_jobs: 7
+  batch_size: 16
+  epochs: 300
+  patience: 50
+  threshold_strategy: validation_youden
+  probability_calibration: sigmoid
+  fold_validation_mode: inner_val
+  final_refit_on_outer_train: true
+  resume_existing_folds: true

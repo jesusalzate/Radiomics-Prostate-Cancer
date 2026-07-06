@@ -1,0 +1,25 @@
+train_classical:
+  csv: results/radiomics/picai1500_corr/features/features_clinical_only.csv
+  data_pre: artifacts/radiomics
+  results_base: results/revision_experiments/loco/ml/clinical_only
+  experiment_name: revision_loco_clinical_only_ml
+  feature_strategy: all
+  predefined_folds_json: results/revision_experiments/inputs/center_loco_folds.json
+  predefined_fold_id_type: sample_id
+  models:
+    - Random Forest
+    - LightGBM
+    - Gradient Boosting
+  classification_threshold: 0.5
+  threshold_strategy: validation_youden
+  probability_calibration: sigmoid
+  calibration_inner_splits: 3
+  bootstrap_iterations: 1000
+  ci_level: 0.95
+  selection_cache_dir: results/revision_experiments/shared_cache
+  refresh_selection_cache: true
+  tune: true
+  tune_n_iter: 20
+  tune_inner_splits: 3
+  tune_search_n_jobs: 1
+  calculate_differences: true

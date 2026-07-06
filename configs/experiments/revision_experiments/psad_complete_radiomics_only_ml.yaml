@@ -1,0 +1,32 @@
+train_classical:
+  csv: results/revision_experiments/inputs/features_radiomics_psad_source_complete.csv
+  data_pre: artifacts/radiomics
+  results_base: results/revision_experiments/psad_complete_case/ml/radiomics_only
+  experiment_name: revision_psad_complete_radiomics_only_ml
+  feature_strategy: most_discriminant
+  predefined_folds_json: results/revision_experiments/inputs/picai_5folds_psad_source_complete.json
+  predefined_fold_id_type: sample_id
+  models:
+    - Random Forest
+    - LightGBM
+    - Gradient Boosting
+  classification_threshold: 0.5
+  threshold_strategy: validation_youden
+  probability_calibration: sigmoid
+  calibration_inner_splits: 3
+  bootstrap_iterations: 1000
+  ci_level: 0.95
+  min_features: 30
+  max_features_cap: 100
+  samples_per_feature: 15
+  minority_samples_per_feature: 5
+  fdr_alpha: 0.05
+  correlation_threshold: 0.95
+  selection_n_jobs: 7
+  selection_cache_dir: results/revision_experiments/shared_cache
+  refresh_selection_cache: true
+  tune: true
+  tune_n_iter: 20
+  tune_inner_splits: 3
+  tune_search_n_jobs: 1
+  calculate_differences: true

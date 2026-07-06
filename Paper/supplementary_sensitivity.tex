@@ -235,4 +235,247 @@ class for E.}
 \label{fig:featuremaps}
 \end{figure}
 
+%% ---------------------------------------------------------------
+\section{Cross-center transportability (leave-one-center-out)}
+\label{app:loco}
+
+Table~\ref{tab:loco_full} reports the full leave-one-center-out (LOCO) results for
+every classical and TabFM model in each condition (the deep models were not
+re-run under LOCO). In each of the three LOCO folds the model was trained on two
+centers and tested on the entirely held-out third center, and predictions were
+pooled over the three held-out centers; all feature selection, calibration, and
+(for TabFM) in-context background rows were confined to the training centers.
+Discrimination fell by roughly $0.10$--$0.14$ AUROC relative to the center-mixed
+five-fold estimates for every model family, with TabFM retaining a small numerical
+lead in every condition and its relative advantage largest in the combined
+condition. Pooled LOCO AUPRC for TabFM was 0.461 (radiomics-only), 0.480
+(clinical-only), and 0.536 (concatenation).
+
+\begin{table}[htbp]
+\centering
+\caption{Leave-one-center-out transportability: pooled out-of-fold AUROC over the
+three held-out centers with patient-level cluster-bootstrap 95\% confidence
+intervals. ``Five-fold'' repeats the center-mixed primary estimate for reference.}
+\label{tab:loco_full}
+\begin{tabular}{llcc}
+\toprule
+Condition & Model & LOCO AUROC (95\% CI) & Five-fold AUROC \\
+\midrule
+\multirow{4}{*}{Radiomics-only}
+ & Random Forest     & 0.676 (0.647--0.706) & 0.814 \\
+ & Gradient Boosting & 0.694 (0.663--0.723) & 0.802 \\
+ & LightGBM          & 0.695 (0.663--0.725) & 0.792 \\
+ & TabFM             & 0.702 (0.674--0.729) & 0.828 \\
+\midrule
+\multirow{4}{*}{Clinical-only}
+ & Random Forest     & 0.697 (0.666--0.729) & --- \\
+ & Gradient Boosting & 0.700 (0.668--0.731) & --- \\
+ & LightGBM          & 0.676 (0.644--0.709) & --- \\
+ & TabFM             & 0.718 (0.690--0.746) & 0.757 \\
+\midrule
+\multirow{4}{*}{Radiomics$+$clinical (concat)}
+ & Random Forest     & 0.708 (0.678--0.738) & 0.828 \\
+ & Gradient Boosting & 0.728 (0.699--0.756) & --- \\
+ & LightGBM          & 0.708 (0.678--0.739) & --- \\
+ & TabFM             & 0.753 (0.726--0.779) & 0.844 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ---------------------------------------------------------------
+\section{PSA-density source-complete sensitivity}
+\label{app:psad}
+
+To confirm that PSA-density handling did not drive the results, all conditions
+were re-run on the source-complete cohort of 1{,}049 studies with an originally
+recorded (non-derived, non-imputed) PSA density (Table~\ref{tab:psad_full}).
+Discrimination was preserved and, if anything, slightly higher than in the full
+cohort with deterministic derivation and residual median imputation, across all
+model families. The full-cohort derived-plus-median-imputed analysis ($n=1500$)
+likewise matched the primary results (clinical-only Gradient Boosting AUROC 0.748;
+concatenation Random Forest 0.826).
+
+\begin{table}[htbp]
+\centering
+\caption{Source-complete PSA-density sensitivity ($n=1049$): pooled out-of-fold
+AUROC with patient-level cluster-bootstrap 95\% confidence intervals for the
+classical models; TabFM values are pooled out-of-fold point estimates.}
+\label{tab:psad_full}
+\begin{tabular}{llc}
+\toprule
+Condition & Model & AUROC (95\% CI) \\
+\midrule
+\multirow{4}{*}{Radiomics-only}
+ & Random Forest     & 0.832 (0.806--0.858) \\
+ & Gradient Boosting & 0.831 (0.804--0.858) \\
+ & LightGBM          & 0.803 (0.774--0.834) \\
+ & TabFM             & 0.851 \\
+\midrule
+\multirow{4}{*}{Clinical-only}
+ & Gradient Boosting & 0.775 (0.743--0.806) \\
+ & Random Forest     & 0.771 (0.737--0.804) \\
+ & LightGBM          & 0.749 (0.714--0.783) \\
+ & TabFM             & 0.796 \\
+\midrule
+\multirow{4}{*}{Radiomics$+$clinical (concat)}
+ & Random Forest     & 0.857 (0.834--0.881) \\
+ & Gradient Boosting & 0.856 (0.831--0.881) \\
+ & LightGBM          & 0.856 (0.832--0.880) \\
+ & TabFM             & 0.873 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ---------------------------------------------------------------
+\section{Calibration-method sensitivity (isotonic vs Platt)}
+\label{app:isotonic}
+
+Replacing Platt scaling with isotonic regression left discrimination and the
+ranking of the classical models essentially unchanged, as expected for a monotonic
+recalibration (Table~\ref{tab:isotonic}); the largest change in AUROC relative to
+the Platt-calibrated primary analysis was $0.004$.
+
+\begin{table}[htbp]
+\centering
+\caption{Isotonic-calibration sensitivity: pooled out-of-fold AUROC with
+patient-level cluster-bootstrap 95\% confidence intervals (classical models,
+full cohort $n=1500$). Platt-calibrated primary values are shown for reference.}
+\label{tab:isotonic}
+\begin{tabular}{llcc}
+\toprule
+Condition & Model & Isotonic AUROC (95\% CI) & Platt AUROC \\
+\midrule
+\multirow{3}{*}{Radiomics-only}
+ & Random Forest     & 0.813 (0.789--0.837) & 0.814 \\
+ & LightGBM          & 0.800 (0.775--0.825) & 0.792 \\
+ & Gradient Boosting & 0.796 (0.770--0.819) & 0.802 \\
+\midrule
+\multirow{3}{*}{Radiomics$+$clinical (concat)}
+ & Random Forest     & 0.824 (0.800--0.846) & 0.828 \\
+ & Gradient Boosting & 0.820 (0.796--0.842) & --- \\
+ & LightGBM          & 0.816 (0.792--0.841) & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ---------------------------------------------------------------
+\section{Feature-selection stability}
+\label{app:jaccard}
+
+Fold-specific feature selection was highly reproducible. For the radiomics-only
+plan a mean of 67.6 features was retained per fold (range 67--69) from 99 distinct
+features across folds, 41 of which were selected in all five folds; the pairwise
+Jaccard overlap of the five fold-specific feature sets is shown in
+Table~\ref{tab:jaccard} (mean 0.68). The radiomics$+$clinical plan was comparably
+stable (mean pairwise Jaccard 0.69, range 0.61--0.78).
+
+\begin{table}[htbp]
+\centering
+\caption{Pairwise Jaccard overlap of the five fold-specific selected-feature sets
+for the radiomics-only plan.}
+\label{tab:jaccard}
+\begin{tabular}{lccccc}
+\toprule
+ & Fold 1 & Fold 2 & Fold 3 & Fold 4 & Fold 5 \\
+\midrule
+Fold 1 & 1.00 & 0.77 & 0.63 & 0.63 & 0.68 \\
+Fold 2 & 0.77 & 1.00 & 0.66 & 0.67 & 0.77 \\
+Fold 3 & 0.63 & 0.66 & 1.00 & 0.59 & 0.65 \\
+Fold 4 & 0.63 & 0.67 & 0.59 & 1.00 & 0.75 \\
+Fold 5 & 0.68 & 0.77 & 0.65 & 0.75 & 1.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ---------------------------------------------------------------
+\section{Decision-curve biopsy avoidance}
+\label{app:dca}
+
+Table~\ref{tab:dca} translates the decision-curve analysis into biopsy-avoidance
+terms for the best model in each condition, evaluated at its outer-training-derived
+Youden operating point. Relative to a biopsy-all strategy, the combined models
+avoided the most biopsies while maintaining a high negative predictive value. The
+dual-stream late-fusion TabFM operated at a substantially higher probability
+threshold (0.53), so its biopsy-avoidance count is not directly comparable to the
+other operating points.
+
+\begin{table}[htbp]
+\centering
+\caption{Biopsy-avoidance summary at the selected Youden operating point for the
+best model in each condition. Net benefit and biopsies avoided per 100 patients are
+relative to a biopsy-all strategy at the same threshold.}
+\label{tab:dca}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llccccccc}
+\toprule
+Condition & Model & Threshold & Sens. & Spec. & PPV & NPV & Net benefit & Biopsies avoided/100 \\
+\midrule
+Clinical-only & TabFM & 0.30 & 0.628 & 0.749 & 0.497 & 0.836 & 0.100 & 29.4 \\
+Radiomics-only & TabFM & 0.22 & 0.819 & 0.696 & 0.516 & 0.907 & 0.171 & 31.5 \\
+Radiomics$+$clinical (concat) & TabFM & 0.27 & 0.793 & 0.745 & 0.552 & 0.901 & 0.158 & 37.2 \\
+Radiomics$+$clinical (late fusion) & TabFM & 0.53 & 0.762 & 0.763 & 0.560 & 0.890 & 0.024 & 48.7 \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+%% ---------------------------------------------------------------
+\section{Per-center performance for all models}
+\label{app:percenter}
+
+Table~\ref{tab:percenter_full} extends the best-model per-center summary of the
+main text to every model in every condition, on the primary pooled out-of-fold
+predictions. Center sizes and prevalence were: RUMC $n=800$ (29.5\% csPCa), ZGT
+$n=350$ (22.9\%), and PCNN $n=350$ (31.1\%). PCNN was the lowest-performing center
+for every model and condition.
+
+\begin{table}[htbp]
+\centering
+\caption{Per-center AUROC on the primary pooled out-of-fold predictions for all
+models. RUMC, Radboud University Medical Center; ZGT, Ziekenhuisgroep Twente;
+PCNN, Prostaat Centrum Noord-Nederland.}
+\label{tab:percenter_full}
+\begin{tabular}{llccc}
+\toprule
+Condition & Model & RUMC & ZGT & PCNN \\
+\midrule
+\multirow{7}{*}{Radiomics-only}
+ & Gradient Boosting & 0.815 & 0.834 & 0.731 \\
+ & LightGBM & 0.814 & 0.817 & 0.708 \\
+ & Random Forest & 0.835 & 0.834 & 0.735 \\
+ & CapsNet & 0.816 & 0.810 & 0.717 \\
+ & Transformer & 0.829 & 0.825 & 0.702 \\
+ & Transformer--CapsNet & 0.828 & 0.819 & 0.723 \\
+ & TabFM & 0.849 & 0.847 & 0.748 \\
+\midrule
+\multirow{7}{*}{Clinical-only}
+ & Gradient Boosting & 0.799 & 0.785 & 0.628 \\
+ & LightGBM & 0.774 & 0.740 & 0.639 \\
+ & Random Forest & 0.790 & 0.771 & 0.634 \\
+ & CapsNet & 0.794 & 0.776 & 0.638 \\
+ & Transformer & 0.809 & 0.770 & 0.615 \\
+ & Transformer--CapsNet & 0.800 & 0.786 & 0.641 \\
+ & TabFM & 0.803 & 0.797 & 0.635 \\
+\midrule
+\multirow{7}{*}{Radiomics$+$clinical (concat)}
+ & Gradient Boosting & 0.843 & 0.861 & 0.717 \\
+ & LightGBM & 0.833 & 0.858 & 0.729 \\
+ & Random Forest & 0.850 & 0.863 & 0.725 \\
+ & CapsNet & 0.843 & 0.829 & 0.742 \\
+ & Transformer & 0.859 & 0.853 & 0.704 \\
+ & Transformer--CapsNet & 0.841 & 0.841 & 0.708 \\
+ & TabFM & 0.872 & 0.874 & 0.734 \\
+\midrule
+\multirow{7}{*}{Radiomics$+$clinical (dual)}
+ & Gradient Boosting & 0.843 & 0.861 & 0.717 \\
+ & LightGBM & 0.833 & 0.858 & 0.729 \\
+ & Random Forest & 0.850 & 0.863 & 0.725 \\
+ & Dual CapsNet & 0.857 & 0.857 & 0.697 \\
+ & Dual Transformer & 0.860 & 0.855 & 0.706 \\
+ & Dual Transformer--CapsNet & 0.842 & 0.842 & 0.699 \\
+ & TabFM (late fusion) & 0.874 & 0.870 & 0.743 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \end{document}

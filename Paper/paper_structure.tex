@@ -146,7 +146,7 @@ computed on aligned out-of-fold predictions with patient-level cluster-bootstrap
 (AUROC 0.828, 95\% CI 0.805--0.850; AUPRC 0.650), numerically above the Random
 Forest (AUROC 0.814) and the deep tabular pipelines (AUROC 0.794--0.803),
 although the TabFM-versus-Random-Forest difference was not significant after
-multiplicity adjustment ($\Delta$AUROC 0.014; Holm-adjusted $P=0.070$).
+multiplicity adjustment ($\Delta$AUROC 0.014; Holm-adjusted $P=0.084$).
 Radiomics clearly outperformed clinical variables alone (best clinical-only
 AUROC 0.757, also TabFM); combining the two sources produced the best models
 overall, whether by simple concatenation passed to TabFM (AUROC 0.844, 95\% CI
@@ -164,7 +164,13 @@ collapsed to near-chance discrimination (AUROC 0.522), indicating that the
 observed gain reflects the foundation model's pretraining rather than its
 architecture alone. Center-stratified analysis revealed marked heterogeneity,
 with significantly lower discrimination at one of three centers (AUROC 0.74
-vs.\ 0.84 elsewhere) in every model family including TabFM, and model-agnostic
+vs.\ 0.84 elsewhere) in every model family including TabFM. Under leave-one-center-out
+retraining---a direct test of transportability to an unseen center---discrimination fell
+substantially for every model family (radiomics-only pooled AUROC $\approx$0.68--0.70,
+combined $\approx$0.71--0.75), with TabFM retaining a small numerical lead
+(radiomics-only 0.702; combined 0.753) but no model reaching its internal
+cross-validation performance, quantifying an optimistic bias of $\approx$0.10--0.14 AUROC
+in the center-mixed folds. Model-agnostic
 SHAP attributions confirmed that TabFM relied on the same diffusion-weighted
 and PSA-density signature as the classical and deep models. A pretrained tabular
 foundation model thus led numerically in all conditions and provided a
@@ -257,11 +263,11 @@ across centers: csPCa prevalence (31.1\%, 29.5\%, and 22.9\% for PCNN, RUMC, and
 ZGT; $\chi^2$ $P=0.029$), patient age, serum PSA, and prostate volume all
 differed significantly between centers (Kruskal--Wallis $P<10^{-5}$), whereas
 PSA density did not ($P=0.48$). Because the official folds group patients but are
-not center-disjoint, this allowed per-center reporting of discrimination
-(Section~\ref{sec:res-center}) but not leave-one-center-out retraining; the
-evaluation should therefore be interpreted as multicenter internal validation
-with center-stratified subgroup performance, rather than as evidence of
-transportability to an unseen center. Radiomic features were extracted throughout
+not center-disjoint, the primary five-fold evaluation should be interpreted as
+multicenter internal validation with center-stratified subgroup performance
+(Section~\ref{sec:res-center}); transportability to an unseen center was assessed
+separately by a leave-one-center-out retraining analysis
+(Section~\ref{sec:res-transport}). Radiomic features were extracted throughout
 from a single, uniform automated whole-gland segmentation (Bosma22b) for every
 study, so that the lesion-delineation provenance present in the dataset did not
 enter the radiomic feature space.
@@ -375,7 +381,12 @@ deterministically as the ratio of PSA to prostate volume whenever both source
 values were available; any remaining missing clinical values were then imputed by
 the training-fold median, and all clinical variables were standardized using
 training-fold statistics, with both the derivation and the imputation/scaling
-statistics transferred unchanged to the validation fold.
+statistics transferred unchanged to the validation fold. This deterministic
+derivation recovered 399 of the 451 studies with missing PSA density, leaving only
+52 studies (3.5\%) with a training-fold-median-imputed value; to confirm that the
+imputation did not drive any conclusion, all clinical-containing conditions were
+re-run on a strict source-complete cohort restricted to the 1{,}049 studies with a
+non-derived, originally recorded PSA density (Section~\ref{sec:res-transport}).
 
 %% ---------------------------------------------------------------
 \subsection{Predictive models}
@@ -562,6 +573,30 @@ bootstrap $P$ value. Cohort heterogeneity across centers was summarized with the
 $\chi^2$ test for categorical variables and the Kruskal--Wallis test for
 continuous variables.
 
+Because the official patient-grouped folds mix acquisition centers and therefore
+report per-center performance of a center-mixed--trained model rather than
+transportability to an unseen center, discrimination was additionally estimated
+under a leave-one-center-out (LOCO) protocol. In each of the three LOCO folds the
+model was trained on two centers and tested on the entirely held-out third center
+(train RUMC$+$ZGT / test PCNN; train PCNN$+$ZGT / test RUMC; train PCNN$+$RUMC /
+test ZGT); all preprocessing, fold-specific feature selection, calibration, and
+threshold selection were confined to the two training centers, and for TabFM the
+in-context background rows were drawn only from the training centers, so the
+held-out center never entered any fitting or context set. Out-of-fold predictions
+were pooled across the three held-out centers to yield a single transportability
+estimate per condition (radiomics-only, clinical-only, and radiomics$+$clinical) for
+the classical, deep, and TabFM families. Two further sensitivity analyses probed
+the robustness of the primary five-fold results: (i)~a source-complete PSA-density
+analysis restricted to the 1{,}049 studies with an originally recorded PSA density
+(versus the full cohort with deterministic derivation and residual median
+imputation), and (ii)~a calibration-method comparison replacing Platt scaling with
+isotonic regression for the classical radiomics-only and concatenation models.
+Feature-selection stability was summarized by the per-fold selection frequency and
+the pairwise Jaccard overlap of the five fold-specific feature sets, and clinical
+utility was expressed, from the decision-curve analysis, as the net benefit and the
+number of biopsies avoided per 100 patients relative to a biopsy-all strategy at
+each model's operating point.
+
 %% ---------------------------------------------------------------
 \subsection{Interpretability and feature-stability analysis}
 \label{sec:interpret-methods}
@@ -620,8 +655,8 @@ confidence intervals is shown in Figure~\ref{fig:radiomics_forest} and
 per-model operating-point metrics in Table~S2 (Supplementary Material). The
 confidence intervals overlapped substantially across families: in the specified
 TabFM--Random-Forest comparison the AUROC difference was not significant after
-multiplicity adjustment ($\Delta$AUROC $+0.014$; Holm-adjusted $P=0.070$),
-although AUPRC was ($\Delta=+0.045$; Holm-adjusted $P=0.018$;
+multiplicity adjustment ($\Delta$AUROC $+0.014$; Holm-adjusted $P=0.084$),
+although AUPRC was ($\Delta=+0.045$; Holm-adjusted $P=0.022$;
 Table~\ref{tab:significance}), and the originally specified Random
 Forest--Transformer comparison was likewise non-significant ($\Delta$AUROC
 $+0.014$; Holm-adjusted $P=0.272$). At each model's outer-training-derived
@@ -888,6 +923,107 @@ Model & Center & $n$ (csPCa \%) & AUROC & AUPRC \\
 \bottomrule
 \end{tabular}
 }
+\end{table}
+
+\subsection{Cross-center transportability and sensitivity analyses}
+\label{sec:res-transport}
+
+The center-stratified results above report a center-mixed--trained model evaluated
+per center; to test genuine transportability we retrained every condition under a
+leave-one-center-out (LOCO) protocol and pooled the predictions over the three
+held-out centers (Table~\ref{tab:loco}). Discrimination fell substantially for every
+model family relative to the center-mixed five-fold estimates. In the radiomics-only
+setting the pooled LOCO AUROC dropped to 0.702 for TabFM (from 0.828), 0.695 for the
+best classical model (LightGBM; Random Forest 0.676, from 0.814), and to a similar
+range for the deep models; adding clinical variables recovered part of the loss
+(concatenation pooled LOCO AUROC 0.753 for TabFM and 0.728 for the best classical
+model), and clinical variables alone transported at 0.70--0.72. TabFM retained a
+small numerical lead in every LOCO condition, and its relative robustness was
+greatest in the combined condition ($+0.025$--$0.045$ AUROC over the best classical
+model), but no model approached its internal cross-validation performance. The
+implied optimistic bias of the center-mixed folds---roughly $0.10$--$0.14$ AUROC in
+the radiomics-only and combined conditions---is consistent in magnitude with the
+between-center gap identified at PCNN, and indicates that the aggregate five-fold
+numbers should be read as multicenter internal validation rather than as estimates of
+performance at a new site.
+
+The primary conclusions were otherwise robust to the two pre-planned sensitivity
+analyses. Restricting the analysis to the 1{,}049 studies with an originally recorded
+(non-derived) PSA density left the ordering and magnitude of results essentially
+unchanged and, if anything, slightly higher than the full-cohort imputed analysis
+(radiomics-only Random Forest AUROC 0.832, concatenation Random Forest 0.857,
+concatenation TabFM 0.873), confirming that neither the derived nor the
+median-imputed PSA-density values inflated the combined-model performance
+(Table~\ref{tab:psad}). Replacing Platt scaling with isotonic regression did not
+change discrimination or the ranking of the classical models in either the
+radiomics-only (Random Forest AUROC 0.813 vs.\ 0.814) or the concatenation condition
+(Random Forest 0.824 vs.\ 0.828), as expected for a monotonic recalibration
+(Table~\ref{tab:psad}). Feature selection was stable across folds, with a mean
+pairwise Jaccard overlap of 0.67 for the radiomics-only plan and 0.69 for the
+radiomics$+$clinical plan (Table~S6). Finally, at each model's outer-training-derived
+operating point the decision-curve analysis translated into a clinically meaningful
+reduction in biopsies: relative to a biopsy-all strategy, the concatenation TabFM
+avoided 37 biopsies per 100 patients at a net-benefit gain of $+0.135$ and a negative
+predictive value of 0.90, and the radiomics-only TabFM avoided 32 per 100 at
+NPV~0.91 (Table~S7).
+
+\begin{table}[!htbp]
+\centering
+\caption{Cross-center transportability under leave-one-center-out (LOCO)
+retraining. AUROC and AUPRC are pooled over the three held-out centers with
+patient-level cluster-bootstrap 95\% confidence intervals for AUROC. The
+right-hand column repeats the center-mixed five-fold estimate from the main
+analysis for reference; the difference ($\Delta$) is the optimistic bias of the
+center-mixed folds. Best classical model is the top-ranked ensemble in each
+condition; Random Forest is shown as the primary classical reference.}
+\label{tab:loco}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llccc}
+\toprule
+Condition & Model & LOCO AUROC (95\% CI) & LOCO AUPRC & Five-fold AUROC ($\Delta$) \\
+\midrule
+\multirow{3}{*}{Radiomics-only}
+ & Random Forest        & 0.676 (0.647--0.706) & 0.443 & 0.814 ($-0.138$) \\
+ & LightGBM (best ML)   & 0.695 (0.663--0.725) & 0.470 & 0.792 ($-0.097$) \\
+ & TabFM                & 0.702 (0.674--0.729) & 0.461 & 0.828 ($-0.126$) \\
+\midrule
+\multirow{3}{*}{Clinical-only}
+ & Random Forest        & 0.697 (0.666--0.729) & 0.457 & --- \\
+ & Gradient Boosting (best ML) & 0.700 (0.668--0.731) & 0.465 & --- \\
+ & TabFM                & 0.718 (0.690--0.746) & 0.480 & 0.757 ($-0.039$) \\
+\midrule
+\multirow{3}{*}{Radiomics$+$clinical (concat)}
+ & Random Forest        & 0.708 (0.678--0.738) & 0.485 & 0.828 ($-0.120$) \\
+ & Gradient Boosting (best ML) & 0.728 (0.699--0.756) & 0.501 & --- \\
+ & TabFM                & 0.753 (0.726--0.779) & 0.536 & 0.844 ($-0.091$) \\
+\bottomrule
+\end{tabular}
+}
+\end{table}
+
+\begin{table}[!htbp]
+\centering
+\caption{Sensitivity of the primary five-fold results to PSA-density handling and
+to the calibration method. All values are pooled out-of-fold AUROC. ``Primary''
+is the full cohort ($n=1500$) with deterministic PSA-density derivation, residual
+training-fold median imputation, and Platt scaling. ``Source-complete'' restricts
+to the $n=1049$ studies with an originally recorded PSA density. ``Isotonic''
+replaces Platt scaling with isotonic regression on the full cohort and was
+evaluated for the classical models only.}
+\label{tab:psad}
+\begin{tabular}{llccc}
+\toprule
+Condition & Model & Primary ($n{=}1500$) & Source-complete ($n{=}1049$) & Isotonic ($n{=}1500$) \\
+\midrule
+\multirow{2}{*}{Radiomics-only}
+ & Random Forest & 0.814 & 0.832 & 0.813 \\
+ & TabFM         & 0.828 & 0.851 & --- \\
+\midrule
+\multirow{2}{*}{Radiomics$+$clinical (concat)}
+ & Random Forest & 0.828 & 0.857 & 0.824 \\
+ & TabFM         & 0.844 & 0.873 & --- \\
+\bottomrule
+\end{tabular}
 \end{table}
 
 \subsection{Interpretability}
@@ -1169,25 +1305,38 @@ its best overall and statistically tied. As already noted, no elaborate fusion
 strategy beat simple concatenation in any model family, so the incremental value
 of the clinical variables is best captured by the parsimonious combined model.
 
-The study has limitations. It was a retrospective analysis without external
-validation; all estimates are multicenter internal cross-validation on a single
-cohort, so generalization to other scanners, protocols, and populations is
-unverified. The patient-grouped folds were not center-disjoint, so
-acquisition-specific signatures could be shared between training and held-out
-folds; consequently, although discrimination is reported per center
-(Section~\ref{sec:res-center}), true cross-center transportability---which would
-require leave-one-center-out retraining or an external cohort---was not tested.
-The center-stratified analysis is itself an important caution: discrimination was
-substantially and significantly lower at one of the three centers (PCNN), and the
-incremental value of clinical variables was not uniform across sites, indicating
-that aggregate performance can mask clinically relevant site-level
-heterogeneity. PI-RADS scores could not be recovered from the public metadata, so
+The study has limitations. It was a retrospective analysis without an independent
+external cohort; all estimates derive from the single PI-CAI collection, so
+generalization to other scanners, protocols, and populations remains unverified.
+Because the patient-grouped folds were not center-disjoint, acquisition-specific
+signatures could be shared between training and held-out folds, and the aggregate
+five-fold numbers are correspondingly optimistic; the leave-one-center-out analysis
+introduced here (Section~\ref{sec:res-transport}) provides the strongest
+transportability signal achievable within PI-CAI and shows that discrimination
+falls by roughly $0.10$--$0.14$ AUROC when a center is genuinely held out, with every
+model family---including TabFM---degrading to moderate discrimination
+($\approx$0.68--0.75). This is an internal surrogate for, not a replacement of, true
+external validation on an independent cohort, which remains necessary. Consistent
+with this, the center-stratified analysis shows that discrimination was
+substantially and significantly lower at one of the three centers (PCNN) and that
+the incremental value of clinical variables was not uniform across sites, so
+aggregate performance can mask clinically relevant site-level heterogeneity.
+PI-RADS scores could not be recovered from the public metadata, so
 the radiomic and combined models could not be benchmarked against, or combined
-with, the standard radiological assessment.
+with, the standard radiological assessment; the present comparison is therefore
+best read as a controlled comparison of model families on a fixed radiomic feature
+space rather than as a positioning against the clinical standard of care.
 Features were extracted from whole-gland rather than lesion-level masks, and the
 masks were automatically generated, introducing potential segmentation
-variability. PSA density was missing for nearly one third of studies and was
-imputed, which may attenuate its contribution. The cohort is class-imbalanced,
+variability; whole-gland extraction summarizes the entire gland and may dilute
+focal lesion texture, so whether the model-family ranking would hold at
+lesion level is untested. PSA density was originally missing for nearly one third
+of studies; it was deterministically derived from PSA and prostate volume where
+possible (recovering 399 of 451 studies) and only otherwise median-imputed, and a
+source-complete sensitivity analysis ($n=1049$) reproduced---and slightly
+exceeded---the primary results (Section~\ref{sec:res-transport},
+Table~\ref{tab:psad}), indicating that the imputation did not drive the findings.
+The cohort is class-imbalanced,
 and the absolute gains from clinical variables, while statistically significant,
 are modest. In addition, the preliminary screening of twelve classical
 algorithms and the selection of condition winners reused the evaluation cohort.

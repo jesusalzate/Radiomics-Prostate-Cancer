@@ -47,7 +47,8 @@ artifacts/clinical/
 artifacts/radiomics_lesion/
 src/prostate_radiomics_ml.egg-info/
 notebooks/
-
+Paper/
+word_version
 # Keep canonical cohort manifest versionable.
 !artifacts/data.csv
 artifacts/**/*.log

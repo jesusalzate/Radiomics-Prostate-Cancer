@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.28 (TeX Live 2025) (preloaded format=pdflatex 2026.1.26)  3 JUL 2026 10:20
+This is pdfTeX, Version 3.141592653-2.6-1.40.28 (TeX Live 2025) (preloaded format=pdflatex 2026.1.26)  6 JUL 2026 15:37
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -423,66 +423,64 @@ File: figures/fig_tabfm_shap.png Graphic file (type png)
 <use figures/fig_tabfm_shap.png>
 Package pdftex.def Info: figures/fig_tabfm_shap.png  used on input line 177.
 (pdftex.def)             Requested size: 469.75502pt x 170.37428pt.
-<figures/fig_feature_maps_10322_1000328_map_only.png, id=67, 693.792pt x 476.98
-2pt>
-File: figures/fig_feature_maps_10322_1000328_map_only.png Graphic file (type pn
-g)
-<use figures/fig_feature_maps_10322_1000328_map_only.png>
-Package pdftex.def Info: figures/fig_feature_maps_10322_1000328_map_only.png  u
-sed on input line 207.
-(pdftex.def)             Requested size: 230.18253pt x 158.2488pt.
-<figures/fig_feature_maps_11377_1001400_map_only.png, id=68, 693.792pt x 476.98
-2pt>
-File: figures/fig_feature_maps_11377_1001400_map_only.png Graphic file (type pn
-g)
-<use figures/fig_feature_maps_11377_1001400_map_only.png>
-Package pdftex.def Info: figures/fig_feature_maps_11377_1001400_map_only.png  u
-sed on input line 212.
-(pdftex.def)             Requested size: 230.18253pt x 158.2488pt.
-<figures/fig_feature_maps_10383_1000389_map_only.png, id=69, 693.792pt x 476.98
-2pt>
-File: figures/fig_feature_maps_10383_1000389_map_only.png Graphic file (type pn
-g)
-<use figures/fig_feature_maps_10383_1000389_map_only.png>
-Package pdftex.def Info: figures/fig_feature_maps_10383_1000389_map_only.png  u
-sed on input line 219.
-(pdftex.def)             Requested size: 230.18253pt x 158.2488pt.
- [3 <./figures/fig_tabfm_shap.png>] [4 <./figures/fig_feature_maps_10322_100032
-8_map_only.png> <./figures/fig_feature_maps_11377_1001400_map_only.png> <./figu
-res/fig_feature_maps_10383_1000389_map_only.png>]
-Overfull \hbox (10.69452pt too wide) in paragraph at lines 260--283
+ [3 <./figures/fig_tabfm_shap.png>]
+<figures/fig_loco_transportability.png, id=75, 448.074pt x 332.442pt>
+File: figures/fig_loco_transportability.png Graphic file (type png)
+<use figures/fig_loco_transportability.png>
+Package pdftex.def Info: figures/fig_loco_transportability.png  used on input l
+ine 210.
+(pdftex.def)             Requested size: 338.22418pt x 250.94398pt.
+
+Overfull \hbox (27.62138pt too wide) in paragraph at lines 229--261
  [][] 
  []
 
-[5] [6] [7] [8] (./supplementary_sensitivity.aux)
+[4 <./figures/fig_loco_transportability.png>] [5]
+<figures/fig_calibration_platt_isotonic.png, id=91, 650.43pt x 317.988pt>
+File: figures/fig_calibration_platt_isotonic.png Graphic file (type png)
+<use figures/fig_calibration_platt_isotonic.png>
+Package pdftex.def Info: figures/fig_calibration_platt_isotonic.png  used on in
+put line 349.
+(pdftex.def)             Requested size: 469.75502pt x 229.66443pt.
+ [6] [7 <./figures/fig_calibration_platt_isotonic.png>]
+Overfull \hbox (74.23499pt too wide) in paragraph at lines 444--453
+ [][] 
+ []
+
+<figures/fig_per_center_auroc.png, id=111, 939.51pt x 303.534pt>
+File: figures/fig_per_center_auroc.png Graphic file (type png)
+<use figures/fig_per_center_auroc.png>
+Package pdftex.def Info: figures/fig_per_center_auroc.png  used on input line 4
+67.
+(pdftex.def)             Requested size: 469.75502pt x 151.76662pt.
+[8 <./figures/fig_per_center_auroc.png>] [9] (./supplementary_sensitivity.aux)
  ***********
 LaTeX2e <2025-11-01>
 L3 programming layer <2026-01-19>
  ***********
 Package rerunfilecheck Info: File `supplementary_sensitivity.out' has not chang
 ed.
-(rerunfilecheck)             Checksum: 929C203EE9E762C17F631DB4663F450A;2964.
+(rerunfilecheck)             Checksum: 96B744613C72FBEC24B86BF77628C6DD;3011.
  ) 
 Here is how much of TeX's memory you used:
- 11327 strings out of 467533
- 181229 string characters out of 5419489
- 618018 words of memory out of 5000000
- 40095 multiletter control sequences out of 15000+600000
- 635543 words of font info for 67 fonts, out of 8000000 for 9000
+ 11320 strings out of 467533
+ 180674 string characters out of 5419489
+ 618785 words of memory out of 5000000
+ 40086 multiletter control sequences out of 15000+600000
+ 634936 words of font info for 65 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,12n,79p,1056b,591s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,12n,79p,964b,471s stack positions out of 10000i,1000n,20000p,200000b,200000s
 </usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx10.pfb
 ></usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb>
-</usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx9.pfb></
-usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb></u
-sr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr
-/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb></usr/l
-ocal/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr9.pfb></usr/loca
-l/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmti10.pfb>
-Output written on supplementary_sensitivity.pdf (8 pages, 1683245 bytes).
+</usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmmi10.pfb><
+/usr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></u
+sr/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmr17.pfb></usr
+/local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmsy10.pfb></usr/
+local/texlive/2025/texmf-dist/fonts/type1/public/amsfonts/cm/cmti10.pfb>
+Output written on supplementary_sensitivity.pdf (9 pages, 1367425 bytes).
 PDF statistics:
- 159 PDF objects out of 1000 (max. 8388607)
- 123 compressed objects within 2 object streams
- 29 named destinations out of 1000 (max. 500000)
+ 165 PDF objects out of 1000 (max. 8388607)
+ 130 compressed objects within 2 object streams
+ 33 named destinations out of 1000 (max. 500000)
  101 words of extra memory for PDF output out of 10000 (max. 10000000)
 

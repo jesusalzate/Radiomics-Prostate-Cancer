@@ -190,66 +190,35 @@ independent attribution methods.}
 \end{figure}
 
 %% ---------------------------------------------------------------
-\section{Voxel-based radiomic feature maps}
-\label{app:featuremaps}
-
-To provide case-level spatial explanations directly on the anatomy, a selected
-set of influential features was back-projected to the image as voxel-wise
-radiomic maps in csPCa-positive cases with human-expert lesion delineations
-(Figure~\ref{fig:featuremaps}). Their salient regions co-localized with the
-delineated csPCa lesion rather than being distributed uniformly through the
-gland, complementing the global importance summaries in the main text.
-
-\begin{figure}[htbp]
-\centering
-\begin{subfigure}[t]{0.49\textwidth}
-    \centering
-    \includegraphics[width=\linewidth]{fig_feature_maps_10322_1000328_map_only.png}
-    \caption{Case 10322\_1000328.}
-\end{subfigure}\hfill
-\begin{subfigure}[t]{0.49\textwidth}
-    \centering
-    \includegraphics[width=\linewidth]{fig_feature_maps_11377_1001400_map_only.png}
-    \caption{Case 11377\_1001400.}
-\end{subfigure}
-
-\vspace{0.5em}
-\begin{subfigure}[t]{0.49\textwidth}
-    \centering
-    \includegraphics[width=\linewidth]{fig_feature_maps_10383_1000389_map_only.png}
-    \caption{Case 10383\_1000389.}
-\end{subfigure}
-\caption{\textbf{Original DWI and prostate-centered voxel-based radiomic maps in
-csPCa-positive cases with human-expert lesion delineations.} In each subfigure,
-(A)~original DWI slice with prostate
-gland (cyan) and csPCa lesion (green) delineations only; (B)~ADC square-root
-first-order total energy, (C)~DWI exponential GLCM Imc1, (D)~DWI LoG 3 mm
-first-order skewness, (E)~DWI wavelet GLCM Imc2, and (F)~DWI square GLRLM
-gray-level non-uniformity. Feature panels show only the voxel map within a
-prostate-centered bounding box, with the gland and lesion contours retained.
-Colour encodes voxel-based feature value on a per-feature relative scale
-(low to high). Panel titles indicate the feature direction from the signed
-SHAP/integrated-gradient beeswarm analyses: lower values support the positive
-csPCa class for B--D and F, whereas higher values support the positive csPCa
-class for E.}
-\label{fig:featuremaps}
-\end{figure}
-
-%% ---------------------------------------------------------------
 \section{Cross-center transportability (leave-one-center-out)}
 \label{app:loco}
 
 Table~\ref{tab:loco_full} reports the full leave-one-center-out (LOCO) results for
-every classical and TabFM model in each condition (the deep models were not
-re-run under LOCO). In each of the three LOCO folds the model was trained on two
+every classical, deep, and TabFM model in each condition. In each of the three LOCO folds the model was trained on two
 centers and tested on the entirely held-out third center, and predictions were
 pooled over the three held-out centers; all feature selection, calibration, and
 (for TabFM) in-context background rows were confined to the training centers.
 Discrimination fell by roughly $0.10$--$0.14$ AUROC relative to the center-mixed
 five-fold estimates for every model family, with TabFM retaining a small numerical
 lead in every condition and its relative advantage largest in the combined
-condition. Pooled LOCO AUPRC for TabFM was 0.461 (radiomics-only), 0.480
-(clinical-only), and 0.536 (concatenation).
+condition; off-center, all seven model families converged into a narrow
+$\approx$0.68--0.75 band (Figure~\ref{fig:loco}). Pooled LOCO AUPRC for TabFM was
+0.461 (radiomics-only), 0.480 (clinical-only), and 0.536 (concatenation).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.72\textwidth]{fig_loco_transportability.png}
+\caption{\textbf{Cross-center transportability of discrimination.} Pooled
+out-of-fold AUROC for the Random Forest (blue) and TabFM (orange) under the
+center-mixed five-fold cross-validation (left) versus leave-one-center-out
+retraining (right), for the radiomics-only (solid), clinical-only (dotted), and
+radiomics$+$clinical (dashed) conditions. Whiskers at the leave-one-center-out
+points are patient-level cluster-bootstrap 95\% confidence intervals. Every
+condition and model family converges into a narrow $\approx$0.68--0.75 band when a
+center is genuinely held out, roughly $0.10$--$0.14$ AUROC below the center-mixed
+estimate.}
+\label{fig:loco}
+\end{figure}
 
 \begin{table}[htbp]
 \centering
@@ -261,23 +230,32 @@ intervals. ``Five-fold'' repeats the center-mixed primary estimate for reference
 \toprule
 Condition & Model & LOCO AUROC (95\% CI) & Five-fold AUROC \\
 \midrule
-\multirow{4}{*}{Radiomics-only}
- & Random Forest     & 0.676 (0.647--0.706) & 0.814 \\
- & Gradient Boosting & 0.694 (0.663--0.723) & 0.802 \\
- & LightGBM          & 0.695 (0.663--0.725) & 0.792 \\
- & TabFM             & 0.702 (0.674--0.729) & 0.828 \\
+\multirow{7}{*}{Radiomics-only}
+ & Random Forest        & 0.676 (0.647--0.706) & 0.814 \\
+ & Gradient Boosting    & 0.694 (0.663--0.723) & 0.802 \\
+ & LightGBM             & 0.695 (0.663--0.725) & 0.792 \\
+ & Transformer          & 0.681 (0.650--0.712) & 0.801 \\
+ & CapsNet              & 0.710 (0.681--0.739) & 0.794 \\
+ & Transformer--CapsNet & 0.699 (0.670--0.727) & 0.803 \\
+ & TabFM                & 0.702 (0.674--0.729) & 0.828 \\
 \midrule
-\multirow{4}{*}{Clinical-only}
- & Random Forest     & 0.697 (0.666--0.729) & --- \\
- & Gradient Boosting & 0.700 (0.668--0.731) & --- \\
- & LightGBM          & 0.676 (0.644--0.709) & --- \\
- & TabFM             & 0.718 (0.690--0.746) & 0.757 \\
+\multirow{7}{*}{Clinical-only}
+ & Random Forest        & 0.697 (0.666--0.729) & 0.742 \\
+ & Gradient Boosting    & 0.700 (0.668--0.731) & 0.749 \\
+ & LightGBM             & 0.676 (0.644--0.709) & 0.730 \\
+ & Transformer          & 0.660 (0.627--0.691) & 0.748 \\
+ & CapsNet              & 0.707 (0.679--0.735) & 0.748 \\
+ & Transformer--CapsNet & 0.716 (0.687--0.745) & 0.754 \\
+ & TabFM                & 0.718 (0.690--0.746) & 0.757 \\
 \midrule
-\multirow{4}{*}{Radiomics$+$clinical (concat)}
- & Random Forest     & 0.708 (0.678--0.738) & 0.828 \\
- & Gradient Boosting & 0.728 (0.699--0.756) & --- \\
- & LightGBM          & 0.708 (0.678--0.739) & --- \\
- & TabFM             & 0.753 (0.726--0.779) & 0.844 \\
+\multirow{7}{*}{Radiomics$+$clinical (concat)}
+ & Random Forest        & 0.708 (0.678--0.738) & 0.828 \\
+ & Gradient Boosting    & 0.728 (0.699--0.756) & 0.822 \\
+ & LightGBM             & 0.708 (0.678--0.739) & 0.819 \\
+ & Transformer          & 0.707 (0.677--0.736) & 0.827 \\
+ & CapsNet              & 0.727 (0.699--0.755) & 0.818 \\
+ & Transformer--CapsNet & 0.741 (0.715--0.767) & 0.813 \\
+ & TabFM                & 0.753 (0.726--0.779) & 0.844 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -298,8 +276,7 @@ concatenation Random Forest 0.826).
 \begin{table}[htbp]
 \centering
 \caption{Source-complete PSA-density sensitivity ($n=1049$): pooled out-of-fold
-AUROC with patient-level cluster-bootstrap 95\% confidence intervals for the
-classical models; TabFM values are pooled out-of-fold point estimates.}
+AUROC with patient-level cluster-bootstrap 95\% confidence intervals.}
 \label{tab:psad_full}
 \begin{tabular}{llc}
 \toprule
@@ -309,19 +286,19 @@ Condition & Model & AUROC (95\% CI) \\
  & Random Forest     & 0.832 (0.806--0.858) \\
  & Gradient Boosting & 0.831 (0.804--0.858) \\
  & LightGBM          & 0.803 (0.774--0.834) \\
- & TabFM             & 0.851 \\
+ & TabFM             & 0.851 (0.826--0.876) \\
 \midrule
 \multirow{4}{*}{Clinical-only}
  & Gradient Boosting & 0.775 (0.743--0.806) \\
  & Random Forest     & 0.771 (0.737--0.804) \\
  & LightGBM          & 0.749 (0.714--0.783) \\
- & TabFM             & 0.796 \\
+ & TabFM             & 0.796 (0.766--0.826) \\
 \midrule
 \multirow{4}{*}{Radiomics$+$clinical (concat)}
  & Random Forest     & 0.857 (0.834--0.881) \\
  & Gradient Boosting & 0.856 (0.831--0.881) \\
  & LightGBM          & 0.856 (0.832--0.880) \\
- & TabFM             & 0.873 \\
+ & TabFM             & 0.873 (0.850--0.896) \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -330,33 +307,53 @@ Condition & Model & AUROC (95\% CI) \\
 \section{Calibration-method sensitivity (isotonic vs Platt)}
 \label{app:isotonic}
 
-Replacing Platt scaling with isotonic regression left discrimination and the
-ranking of the classical models essentially unchanged, as expected for a monotonic
-recalibration (Table~\ref{tab:isotonic}); the largest change in AUROC relative to
-the Platt-calibrated primary analysis was $0.004$.
+Replacing Platt scaling with isotonic regression left discrimination essentially
+unchanged (as expected for a monotonic recalibration) and improved calibration
+(Table~\ref{tab:isotonic}, Figure~\ref{fig:calib}). The Platt-calibrated models used
+in the main analysis were already well calibrated, with a 10-bin expected calibration
+error (ECE) of 0.03--0.05 and Brier scores of 0.147--0.159; isotonic regression
+approximately halved the ECE (to 0.01--0.03) at a near-identical Brier score, so the
+choice of calibration map does not affect the conclusions. The larger maximum
+calibration error occasionally seen for isotonic reflects sparsely populated
+high-probability bins rather than a systematic miscalibration.
 
 \begin{table}[htbp]
 \centering
-\caption{Isotonic-calibration sensitivity: pooled out-of-fold AUROC with
-patient-level cluster-bootstrap 95\% confidence intervals (classical models,
-full cohort $n=1500$). Platt-calibrated primary values are shown for reference.}
+\caption{Calibration-method sensitivity (full cohort $n=1500$, classical models):
+pooled out-of-fold AUROC, Brier score, and 10-bin expected calibration error (ECE)
+under Platt and isotonic recalibration. Lower Brier and ECE are better.}
 \label{tab:isotonic}
-\begin{tabular}{llcc}
+\resizebox{\textwidth}{!}{
+\begin{tabular}{llcccccc}
 \toprule
-Condition & Model & Isotonic AUROC (95\% CI) & Platt AUROC \\
+ & & \multicolumn{3}{c}{Platt} & \multicolumn{3}{c}{Isotonic} \\
+\cmidrule(lr){3-5}\cmidrule(lr){6-8}
+Condition & Model & AUROC & Brier & ECE & AUROC & Brier & ECE \\
 \midrule
 \multirow{3}{*}{Radiomics-only}
- & Random Forest     & 0.813 (0.789--0.837) & 0.814 \\
- & LightGBM          & 0.800 (0.775--0.825) & 0.792 \\
- & Gradient Boosting & 0.796 (0.770--0.819) & 0.802 \\
+ & Random Forest     & 0.814 & 0.152 & 0.041 & 0.813 & 0.151 & 0.022 \\
+ & LightGBM          & 0.792 & 0.159 & 0.027 & 0.800 & 0.156 & 0.012 \\
+ & Gradient Boosting & 0.802 & 0.156 & 0.049 & 0.796 & 0.157 & 0.026 \\
 \midrule
 \multirow{3}{*}{Radiomics$+$clinical (concat)}
- & Random Forest     & 0.824 (0.800--0.846) & 0.828 \\
- & Gradient Boosting & 0.820 (0.796--0.842) & --- \\
- & LightGBM          & 0.816 (0.792--0.841) & --- \\
+ & Random Forest     & 0.828 & 0.147 & 0.034 & 0.824 & 0.148 & 0.017 \\
+ & Gradient Boosting & 0.822 & 0.151 & 0.045 & 0.820 & 0.149 & 0.011 \\
+ & LightGBM          & 0.819 & 0.149 & 0.046 & 0.816 & 0.150 & 0.029 \\
 \bottomrule
 \end{tabular}
+}
 \end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{fig_calibration_platt_isotonic.png}
+\caption{\textbf{Reliability curves under Platt versus isotonic recalibration.}
+Observed event rate against mean predicted probability (10 quantile bins) for the
+Random Forest in the (left) radiomics-only and (right) radiomics$+$clinical
+conditions; the diagonal denotes perfect calibration. Both maps track the diagonal
+closely, with isotonic giving a lower expected calibration error.}
+\label{fig:calib}
+\end{figure}
 
 %% ---------------------------------------------------------------
 \section{Feature-selection stability}
@@ -420,6 +417,42 @@ Radiomics$+$clinical (late fusion) & TabFM & 0.53 & 0.762 & 0.763 & 0.560 & 0.89
 \end{table}
 
 %% ---------------------------------------------------------------
+\section{Nested algorithm-selection cross-validation}
+\label{app:nested}
+
+Because the classical benchmark was assembled by screening several algorithms on the
+same cohort, the reported confidence intervals are conditional on the selected model
+set. To quantify the residual model-selection uncertainty, a fully nested
+cross-validation was run in which the winning classical algorithm was re-chosen inside
+each outer-training fold by grouped inner cross-validation, without ever using
+outer-fold data; the pooled out-of-fold predictions therefore embed the selection step
+in the confidence interval (Table~\ref{tab:nested}). The nested estimates were
+statistically indistinguishable from the fixed-model primary analysis in every
+condition, and Random Forest was selected in four of the five outer folds in each
+condition (Gradient Boosting in the remaining fold), so the per-condition winners are
+stable and the primary intervals are not materially optimistic with respect to
+algorithm selection.
+
+\begin{table}[htbp]
+\centering
+\caption{Nested algorithm-selection cross-validation: pooled out-of-fold AUROC with
+patient-level cluster-bootstrap 95\% confidence intervals, compared with the
+fixed-model primary analysis. ``Primary AUROC'' is the fixed Random Forest reference
+on the same folds. The rightmost column gives the algorithm chosen by the
+inner cross-validation across the five outer folds.}
+\label{tab:nested}
+\begin{tabular}{lccl}
+\toprule
+Condition & Nested AUROC (95\% CI) & Primary AUROC & Selected model (folds) \\
+\midrule
+Radiomics-only & 0.811 (0.787--0.833) & 0.814 & Random Forest (4/5), GB (1/5) \\
+Clinical-only & 0.742 (0.715--0.769) & 0.742 & Random Forest (4/5), GB (1/5) \\
+Radiomics$+$clinical (concat) & 0.829 (0.807--0.851) & 0.828 & Random Forest (4/5), GB (1/5) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% ---------------------------------------------------------------
 \section{Per-center performance for all models}
 \label{app:percenter}
 
@@ -427,7 +460,17 @@ Table~\ref{tab:percenter_full} extends the best-model per-center summary of the
 main text to every model in every condition, on the primary pooled out-of-fold
 predictions. Center sizes and prevalence were: RUMC $n=800$ (29.5\% csPCa), ZGT
 $n=350$ (22.9\%), and PCNN $n=350$ (31.1\%). PCNN was the lowest-performing center
-for every model and condition.
+for every model and condition (Figure~\ref{fig:percenter}).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{fig_per_center_auroc.png}
+\caption{\textbf{Per-center discrimination for all models.} Pooled out-of-fold AUROC
+at each contributing center for every model in the four conditions. PCNN (orange)
+lies to the left of RUMC (green) and ZGT (purple) for every model and condition; the
+dotted line marks AUROC 0.75.}
+\label{fig:percenter}
+\end{figure}
 
 \begin{table}[htbp]
 \centering

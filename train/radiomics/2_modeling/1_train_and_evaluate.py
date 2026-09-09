@@ -758,12 +758,57 @@ def choose_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     y_prob = np.asarray(y_prob, dtype=float)
     if len(np.unique(y_true)) < 2:
         return 0.5
-    fpr, tpr, thresholds = metrics.roc_curve(y_true, y_prob, pos_label=1)
+    fpr, tpr, thresholds = metrics.roc_curve(
+        y_true,
+        y_prob,
+        pos_label=1,
+        drop_intermediate=False,
+    )
     finite_mask = np.isfinite(thresholds)
     if not np.any(finite_mask):
         return 0.5
     youden = tpr[finite_mask] - fpr[finite_mask]
     return float(thresholds[finite_mask][int(np.argmax(youden))])
+
+
+def target_sensitivity_label(target_sensitivity: float) -> str:
+    """Return a stable column-name suffix for a sensitivity target."""
+
+    target_sensitivity = float(target_sensitivity)
+    if not 0.0 < target_sensitivity <= 1.0:
+        raise ValueError(
+            f"Target sensitivity must be in (0, 1], received {target_sensitivity}."
+        )
+    return f"{target_sensitivity:.6f}".rstrip("0").rstrip(".").replace(".", "p")
+
+
+def choose_threshold_for_sensitivity(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    target_sensitivity: float,
+) -> float:
+    """Choose the most specific threshold reaching a train-only sensitivity target."""
+
+    target_sensitivity_label(target_sensitivity)
+    y_true = np.asarray(y_true).astype(int)
+    y_prob = np.asarray(y_prob, dtype=float)
+    if len(np.unique(y_true)) < 2:
+        return 0.5
+
+    fpr, tpr, thresholds = metrics.roc_curve(
+        y_true,
+        y_prob,
+        pos_label=1,
+        drop_intermediate=False,
+    )
+    eligible = np.isfinite(thresholds) & (tpr >= float(target_sensitivity))
+    if not np.any(eligible):
+        return float(np.nextafter(np.nanmin(y_prob), -np.inf))
+
+    eligible_indices = np.flatnonzero(eligible)
+    minimum_fpr = np.min(fpr[eligible_indices])
+    best_indices = eligible_indices[np.isclose(fpr[eligible_indices], minimum_fpr)]
+    return float(np.max(thresholds[best_indices]))
 
 
 def predict_binary_scores(estimator, X_frame: pd.DataFrame | np.ndarray) -> np.ndarray:
@@ -869,8 +914,13 @@ def evaluate_model(
     threshold_strategy: str = "fixed_0.5",
     classification_threshold: float = 0.5,
     calibration_inner_splits: int = 3,
+    target_sensitivities: list[float] | None = None,
 ):
     """Run grouped repeated cross-validation over a precomputed fold plan."""
+
+    target_sensitivities = [float(value) for value in (target_sensitivities or [])]
+    for target_sensitivity in target_sensitivities:
+        target_sensitivity_label(target_sensitivity)
 
     fold_results = []
     folds_data = []
@@ -965,6 +1015,18 @@ def evaluate_model(
         y_train_prob = apply_probability_calibrator(calibrator, raw_train_scores, probability_calibration)
         y_val_prob = apply_probability_calibrator(calibrator, raw_val_scores, probability_calibration)
         val_youden_threshold = choose_threshold(calibration_y_true, calibration_reference_prob)
+        sensitivity_target_thresholds = {
+            target_sensitivity_label(target): choose_threshold_for_sensitivity(
+                calibration_y_true,
+                calibration_reference_prob,
+                target,
+            )
+            for target in target_sensitivities
+        }
+        sensitivity_target_predictions = {
+            label: (y_val_prob >= threshold).astype(int)
+            for label, threshold in sensitivity_target_thresholds.items()
+        }
         selected_threshold = classification_threshold if threshold_strategy == "fixed_0.5" else val_youden_threshold
         y_val_pred_fixed_0_5 = (y_val_prob >= classification_threshold).astype(int)
         y_val_pred_validation_youden = (y_val_prob >= val_youden_threshold).astype(int)
@@ -1015,6 +1077,10 @@ def evaluate_model(
                 "threshold_strategy": threshold_strategy,
                 "threshold_source": threshold_source,
                 "threshold_selection_n": int(len(calibration_y_true)),
+                "target_sensitivity_thresholds": json.dumps(
+                    sensitivity_target_thresholds,
+                    sort_keys=True,
+                ),
                 "probability_calibration": probability_calibration,
                 "num_selected_features": len(selected_features),
                 "selected_features": selected_features,
@@ -1061,6 +1127,8 @@ def evaluate_model(
                 "threshold_strategy": threshold_strategy,
                 "threshold_source": threshold_source,
                 "threshold_selection_n": int(len(calibration_y_true)),
+                "target_sensitivity_thresholds": sensitivity_target_thresholds,
+                "target_sensitivity_predictions": sensitivity_target_predictions,
                 "probability_calibration": probability_calibration,
             }
         )
@@ -1092,35 +1160,41 @@ def build_flat_prediction_table(predictions_data: list[dict]) -> pd.DataFrame:
                 probability_positive_raw = (
                     float(raw_probabilities[row_index]) if raw_probabilities is not None else np.nan
                 )
-                flat_rows.append(
-                    {
-                        "Classifier": classifier_name,
-                        "Fold": fold_info["fold_index"],
-                        "Repeat": fold_info["Repeat"],
-                        "sample_id": sample_id,
-                        "patient_id": fold_info["patient_ids"][row_index],
-                        "study_id": fold_info["study_ids"][row_index],
-                        "true_label": int(fold_info["y_val"][row_index]),
-                        "predicted_label": int(fold_info["y_val_pred"][row_index]),
-                        "prediction": int(fold_info["y_val_pred"][row_index]),
-                        "prediction_fixed_0_5": int(fold_info["y_val_pred_fixed_0_5"][row_index]),
-                        "prediction_validation_youden": int(
-                            fold_info["y_val_pred_validation_youden"][row_index]
-                        ),
-                        "prob_class_1": probability_positive,
-                        "probability": probability_positive,
-                        "prob_class_1_raw": probability_positive_raw,
-                        "probability_raw": probability_positive_raw,
-                        "threshold_fixed_0_5": 0.5,
-                        "threshold_validation_youden": float(fold_info["validation_youden_threshold"]),
-                        "selected_threshold": float(fold_info["selected_threshold"]),
-                        "threshold_strategy": fold_info["threshold_strategy"],
-                        "threshold_source": fold_info["threshold_source"],
-                        "threshold_selection_n": int(fold_info["threshold_selection_n"]),
-                        "probability_calibration": fold_info["probability_calibration"],
-                        "selected_features": fold_info["selected_features"],
-                    }
-                )
+                flat_row = {
+                    "Classifier": classifier_name,
+                    "Fold": fold_info["fold_index"],
+                    "Repeat": fold_info["Repeat"],
+                    "sample_id": sample_id,
+                    "patient_id": fold_info["patient_ids"][row_index],
+                    "study_id": fold_info["study_ids"][row_index],
+                    "true_label": int(fold_info["y_val"][row_index]),
+                    "predicted_label": int(fold_info["y_val_pred"][row_index]),
+                    "prediction": int(fold_info["y_val_pred"][row_index]),
+                    "prediction_fixed_0_5": int(fold_info["y_val_pred_fixed_0_5"][row_index]),
+                    "prediction_validation_youden": int(
+                        fold_info["y_val_pred_validation_youden"][row_index]
+                    ),
+                    "prob_class_1": probability_positive,
+                    "probability": probability_positive,
+                    "prob_class_1_raw": probability_positive_raw,
+                    "probability_raw": probability_positive_raw,
+                    "threshold_fixed_0_5": 0.5,
+                    "threshold_validation_youden": float(fold_info["validation_youden_threshold"]),
+                    "selected_threshold": float(fold_info["selected_threshold"]),
+                    "threshold_strategy": fold_info["threshold_strategy"],
+                    "threshold_source": fold_info["threshold_source"],
+                    "threshold_selection_n": int(fold_info["threshold_selection_n"]),
+                    "probability_calibration": fold_info["probability_calibration"],
+                    "selected_features": fold_info["selected_features"],
+                }
+                for label, target_threshold in fold_info.get(
+                    "target_sensitivity_thresholds", {}
+                ).items():
+                    flat_row[f"threshold_target_sensitivity_{label}"] = float(target_threshold)
+                    flat_row[f"prediction_target_sensitivity_{label}"] = int(
+                        fold_info["target_sensitivity_predictions"][label][row_index]
+                    )
+                flat_rows.append(flat_row)
 
     flat_df = pd.DataFrame(flat_rows)
     if flat_df.empty:
@@ -1758,6 +1832,17 @@ def main():
         ),
     )
     parser.add_argument(
+        "--target_sensitivities",
+        nargs="*",
+        type=float,
+        default=[],
+        help=(
+            "Optional sensitivity targets. For every outer fold, operating thresholds are "
+            "selected only from grouped inner-CV OOF training predictions and then applied "
+            "to that fold's held-out predictions."
+        ),
+    )
+    parser.add_argument(
         "--probability_calibration",
         choices=["none", "sigmoid", "isotonic"],
         default="none",
@@ -2054,6 +2139,7 @@ def main():
             f"threshold_strategy={args.threshold_strategy}, "
             f"classification_threshold={args.classification_threshold}, "
             f"calibration_inner_splits={args.calibration_inner_splits}, "
+            f"target_sensitivities={args.target_sensitivities}, "
             f"imputer_strategy={args.imputer_strategy}"
         )
         if args.experiment_name:
@@ -2338,6 +2424,7 @@ def main():
                 threshold_strategy=args.threshold_strategy,
                 classification_threshold=args.classification_threshold,
                 calibration_inner_splits=args.calibration_inner_splits,
+                target_sensitivities=args.target_sensitivities,
             )
 
             for fold_metrics_row in fold_metrics:
@@ -2399,6 +2486,9 @@ def main():
                         "threshold_strategy": fold_info["threshold_strategy"],
                         "threshold_source": fold_info["threshold_source"],
                         "threshold_selection_n": fold_info["threshold_selection_n"],
+                        "target_sensitivity_thresholds": fold_info.get(
+                            "target_sensitivity_thresholds", {}
+                        ),
                         "probability_calibration": fold_info["probability_calibration"],
                         "selected_features": fold_info["selected_features"],
                     }

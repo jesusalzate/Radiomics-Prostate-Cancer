@@ -221,6 +221,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="auto", help="'auto', 'cuda', 'cuda:0', or 'cpu'.")
     parser.add_argument("--require_cuda", action="store_true", help="Fail if a CUDA device is not available.")
     parser.add_argument("--random_state", type=int, default=42)
+    parser.add_argument(
+        "--checkpoint_path",
+        default=None,
+        help=(
+            "Optional local pretrained checkpoint. Pinning this path makes a run independent "
+            "of later Hugging Face repository layout changes."
+        ),
+    )
     parser.add_argument("--n_estimators", type=int, default=32)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--max_num_features", type=int, default=500)
@@ -246,6 +254,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=5,
         help="Number of stratified group splits used to form the inner threshold validation set.",
+    )
+    parser.add_argument(
+        "--target_sensitivities",
+        nargs="*",
+        type=float,
+        default=[],
+        help=(
+            "Optional sensitivity targets whose thresholds are chosen on a patient-grouped "
+            "inner validation split within every outer training fold."
+        ),
     )
     parser.add_argument(
         "--permutation_importance_repeats",
@@ -278,7 +296,13 @@ def resolve_device(device_arg: str, require_cuda: bool) -> str:
     return device
 
 
-def load_tabfm_model(variant: str, *, device: str, seed: int):
+def load_tabfm_model(
+    variant: str,
+    *,
+    device: str,
+    seed: int,
+    checkpoint_path: str | None = None,
+):
     """Load pretrained TabFM weights or instantiate the same architecture randomly."""
 
     try:
@@ -294,11 +318,16 @@ def load_tabfm_model(variant: str, *, device: str, seed: int):
     if variant == "pretrained":
         model = tabfm.tabfm_v1_0_0_pytorch.load(
             model_type="classification",
+            checkpoint_path=checkpoint_path,
             device=device,
             use_cache=False,
         )
         model.eval()
-        return model, {"weights": "google/tabfm-1.0.0-pytorch", "random_init": False}
+        return model, {
+            "weights": "google/tabfm-1.0.0-pytorch",
+            "checkpoint_path": checkpoint_path,
+            "random_init": False,
+        }
 
     if variant == "random_init":
         set_global_seed(seed)
@@ -388,13 +417,44 @@ def select_youden_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
     y_prob = np.asarray(y_prob, dtype=float)
     if len(np.unique(y_true)) < 2:
         return 0.5
-    fpr, tpr, thresholds = roc_curve(y_true, y_prob)
+    fpr, tpr, thresholds = roc_curve(y_true, y_prob, drop_intermediate=False)
     finite_mask = np.isfinite(thresholds)
     if not np.any(finite_mask):
         return 0.5
     scores = tpr[finite_mask] - fpr[finite_mask]
     candidates = thresholds[finite_mask]
     return float(np.clip(candidates[int(np.argmax(scores))], 0.0, 1.0))
+
+
+def target_sensitivity_label(target_sensitivity: float) -> str:
+    target_sensitivity = float(target_sensitivity)
+    if not 0.0 < target_sensitivity <= 1.0:
+        raise ValueError(
+            f"Target sensitivity must be in (0, 1], received {target_sensitivity}."
+        )
+    return f"{target_sensitivity:.6f}".rstrip("0").rstrip(".").replace(".", "p")
+
+
+def select_threshold_for_sensitivity(
+    y_true: np.ndarray,
+    y_prob: np.ndarray,
+    target_sensitivity: float,
+) -> float:
+    """Choose the most specific threshold reaching the requested sensitivity."""
+
+    target_sensitivity_label(target_sensitivity)
+    y_true = np.asarray(y_true).astype(int)
+    y_prob = np.asarray(y_prob, dtype=float)
+    if len(np.unique(y_true)) < 2:
+        return 0.5
+    fpr, tpr, thresholds = roc_curve(y_true, y_prob, drop_intermediate=False)
+    eligible = np.isfinite(thresholds) & (tpr >= float(target_sensitivity))
+    if not np.any(eligible):
+        return float(np.nextafter(np.nanmin(y_prob), -np.inf))
+    eligible_indices = np.flatnonzero(eligible)
+    minimum_fpr = np.min(fpr[eligible_indices])
+    best_indices = eligible_indices[np.isclose(fpr[eligible_indices], minimum_fpr)]
+    return float(np.max(thresholds[best_indices]))
 
 
 def resolve_inner_threshold_split(
@@ -419,6 +479,7 @@ def fold_artifacts_complete(
     variant: str,
     threshold_strategy: str,
     *,
+    target_sensitivities: list[float] | None = None,
     require_permutation_importance: bool = False,
 ) -> bool:
     required = [
@@ -432,6 +493,10 @@ def fold_artifacts_complete(
     config = json.loads((fold_dir / "run_config.json").read_text(encoding="utf-8"))
     diagnostics = config.get("threshold_diagnostics", {})
     if config.get("tabfm_variant") != variant or diagnostics.get("threshold_strategy") != threshold_strategy:
+        return False
+    expected_targets = sorted(float(value) for value in (target_sensitivities or []))
+    saved_targets = sorted(float(value) for value in config.get("target_sensitivities", []))
+    if saved_targets != expected_targets:
         return False
     if require_permutation_importance and not (fold_dir / "permutation_importance.csv").exists():
         return False
@@ -478,6 +543,7 @@ def build_predictions_frame(
     fold_index: int,
     label_column: str,
     group_column: str,
+    target_sensitivity_thresholds: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     predictions = df.iloc[test_idx][[group_column, label_column]].copy()
     for optional_column in ["study_id", "sample_id"]:
@@ -497,6 +563,11 @@ def build_predictions_frame(
     predictions["prediction_fixed_0_5"] = (y_prob >= 0.5).astype(int)
     predictions["prediction_validation_youden"] = (y_prob >= selected_threshold).astype(int)
     predictions["prediction"] = predictions["prediction_validation_youden"]
+    for label, target_threshold in (target_sensitivity_thresholds or {}).items():
+        predictions[f"threshold_target_sensitivity_{label}"] = float(target_threshold)
+        predictions[f"prediction_target_sensitivity_{label}"] = (
+            y_prob >= float(target_threshold)
+        ).astype(int)
     return predictions
 
 
@@ -581,6 +652,7 @@ def run_variant(
             fold_dir,
             variant,
             args.threshold_strategy,
+            target_sensitivities=args.target_sensitivities,
             require_permutation_importance=args.permutation_importance_repeats > 0,
         ):
             fold_metrics = pd.read_csv(fold_dir / "test_metrics.csv").iloc[0].to_dict()
@@ -596,7 +668,12 @@ def run_variant(
             continue
 
         if model is None:
-            model, model_metadata = load_tabfm_model(variant, device=device, seed=args.random_state)
+            model, model_metadata = load_tabfm_model(
+                variant,
+                device=device,
+                seed=args.random_state,
+                checkpoint_path=args.checkpoint_path,
+            )
 
         train_idx = np.asarray(split_definition["train_idx"], dtype=int)
         test_idx = np.asarray(split_definition["val_idx"], dtype=int)
@@ -614,6 +691,8 @@ def run_variant(
         X_test = df.iloc[test_idx][selected_features].copy()
         y_train = y_all[train_idx]
         y_test = y_all[test_idx]
+        target_reference_y = None
+        target_reference_prob = None
 
         if args.threshold_strategy == "fixed_0.5":
             selected_threshold = 0.5
@@ -643,8 +722,38 @@ def run_variant(
             selected_threshold = select_youden_threshold(y_all[inner_val_idx], threshold_prob)
             threshold_source = "inner_val_youden"
             threshold_selection_n = int(len(inner_val_idx))
+            target_reference_y = y_all[inner_val_idx]
+            target_reference_prob = threshold_prob
         else:
             raise ValueError(f"Unsupported threshold strategy: {args.threshold_strategy}")
+
+        if args.target_sensitivities and target_reference_prob is None:
+            inner_train_idx, inner_val_idx = resolve_inner_threshold_split(
+                train_idx=train_idx,
+                y_all=y_all,
+                group_values=group_values,
+                n_splits=args.inner_threshold_splits,
+                seed=args.random_state + fold_position - 1,
+            )
+            target_classifier = make_tabfm_classifier(args, model=model, fold_position=fold_position)
+            target_classifier.fit(
+                df.iloc[inner_train_idx][selected_features].copy(),
+                y_all[inner_train_idx],
+            )
+            target_reference_prob = predict_positive_probability(
+                target_classifier,
+                df.iloc[inner_val_idx][selected_features].copy(),
+            )
+            target_reference_y = y_all[inner_val_idx]
+
+        target_sensitivity_thresholds = {
+            target_sensitivity_label(target): select_threshold_for_sensitivity(
+                target_reference_y,
+                target_reference_prob,
+                target,
+            )
+            for target in args.target_sensitivities
+        }
 
         classifier = make_tabfm_classifier(args, model=model, fold_position=fold_position)
         classifier.fit(X_train, y_train)
@@ -663,6 +772,7 @@ def run_variant(
             fold_index=fold_position,
             label_column=args.label_column,
             group_column=args.group_column,
+            target_sensitivity_thresholds=target_sensitivity_thresholds,
         )
         metrics = compute_binary_metrics(y_test, y_prob, threshold=selected_threshold)
         metrics_fixed = compute_binary_metrics(y_test, y_prob, threshold=0.5)
@@ -696,6 +806,7 @@ def run_variant(
             "selected_feature_count": len(selected_features),
             "selection_source": "shared_outer_fold_feature_plan",
             "shared_feature_folds_json": args.shared_feature_folds_json,
+            "target_sensitivities": args.target_sensitivities,
             "split_sizes": {
                 "train": int(len(train_idx)),
                 "validation": int(len(test_idx)),
@@ -720,6 +831,12 @@ def run_variant(
                 "fixed_threshold": 0.5,
                 "validation_youden_threshold": selected_threshold,
                 "threshold_selection_n": threshold_selection_n,
+                "target_sensitivity_threshold_source": (
+                    "inner_validation_within_outer_train"
+                    if target_sensitivity_thresholds
+                    else None
+                ),
+                "target_sensitivity_thresholds": target_sensitivity_thresholds,
                 "training_selection_mode": "tabfm_in_context_no_finetuning",
                 "trained_epochs": 0,
                 "saved_weight_epoch": 0,
@@ -769,6 +886,7 @@ def run_variant(
         "n_outer_folds": len(split_definitions),
         "fold_validation_mode": "outer_val",
         "threshold_strategy": args.threshold_strategy,
+        "target_sensitivities": args.target_sensitivities,
         "validation_callbacks_enabled": False,
         "final_refit_on_outer_train": False,
         "oof_metrics_fixed_0_5": pooled_metrics_fixed,

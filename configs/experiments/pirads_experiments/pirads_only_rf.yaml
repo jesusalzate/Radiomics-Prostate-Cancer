@@ -1,0 +1,21 @@
+train_classical:
+  csv: results/pirads_experiments/inputs/features_pirads_only.csv
+  data_pre: artifacts/radiomics
+  results_base: results/pirads_experiments/ml/pirads_only
+  experiment_name: pirads_only_rf
+  feature_strategy: all
+  predefined_folds_json: results/radiomics/picai1500_corr/picai_5folds.json
+  predefined_fold_id_type: sample_id
+  models:
+    - Random Forest
+  classification_threshold: 0.5
+  threshold_strategy: validation_youden
+  probability_calibration: sigmoid
+  calibration_inner_splits: 3
+  bootstrap_iterations: 1000
+  ci_level: 0.95
+  selection_cache_dir: results/pirads_experiments/shared_cache
+  tune: true
+  tune_n_iter: 20
+  tune_inner_splits: 3
+  tune_search_n_jobs: 1

@@ -1,0 +1,24 @@
+train_classical:
+  csv: results/pirads_experiments/inputs/features_radiomics_pirads.csv
+  data_pre: artifacts/radiomics
+  results_base: results/pirads_experiments/loco/ml/radiomics_pirads
+  experiment_name: pirads_loco_radiomics_pirads_rf
+  feature_strategy: most_discriminant
+  predefined_folds_json: results/revision_experiments/inputs/center_loco_folds.json
+  predefined_fold_id_type: sample_id
+  forced_feature_columns:
+    - clinical_pirads
+  models:
+    - Random Forest
+  classification_threshold: 0.5
+  threshold_strategy: validation_youden
+  probability_calibration: sigmoid
+  calibration_inner_splits: 3
+  bootstrap_iterations: 1000
+  ci_level: 0.95
+  selection_cache_dir: results/pirads_experiments/loco/shared_cache/radiomics_pirads
+  refresh_selection_cache: true
+  tune: true
+  tune_n_iter: 20
+  tune_inner_splits: 3
+  tune_search_n_jobs: 1

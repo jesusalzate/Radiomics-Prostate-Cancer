@@ -82,3 +82,33 @@ rf_job=$(sbatch --parsable scripts/hpc/42_picai1500_pirads_equal_sensitivity_rf.
 tabfm_job=$(sbatch --parsable --dependency="afterok:${rf_job}" scripts/hpc/43_picai1500_pirads_equal_sensitivity_tabfm.sh)
 sbatch --dependency="afterok:${tabfm_job}" scripts/hpc/44_picai1500_pirads_equal_sensitivity_compare.sh
 ```
+
+## Second-round revision (EURE-D-26-00683)
+
+Submit everything with dependencies from the repository root:
+
+```bash
+./run_revision2_experiments.sh
+```
+
+- `45_revision2_prepare_inputs.sh`: PI-RADS + clinical table and plans (five-fold
+  and LOCO), corrected LOCO plans (manuscript selection settings with PI-RADS and
+  clinical predictors forced), no-pre-filter and volume-excluded plans,
+  per-fold feature counts, volume correlations, and Figure 6 extra cases.
+- `46_revision2_classical_5fold.sh`: RF and penalized LR for PI-RADS + clinical,
+  LR for the complete model, and their PI-RADS-derived sensitivity targets.
+- `47_revision2_classical_loco.sh`: RF and LR LOCO for PI-RADS + clinical,
+  radiomics + PI-RADS, and the complete model on the corrected plans.
+- `48_revision2_feature_sensitivity_ml.sh`: complete model without univariable
+  pre-filter (RF, elastic-net LR, LASSO LR) and with volume-correlated features removed (RF).
+- `49_revision2_nested_selection_rf.sh`: radiomic selection refitted inside every
+  inner split (nested) versus the locked outer-training selection.
+- `50_revision2_tabfm_gpu.sh`: all corresponding TabFM runs.
+- `51_revision2_voxel_lesion_quant.sh` (array) and `52_..._aggregate.sh`:
+  voxel-map values inside versus outside the lesion in histology-confirmed csPCa.
+- `53_revision2_analyses.sh`: paired contrasts, LOCO per-center discrimination and
+  calibration, decision curves, partial AUROC, 2x2 tables, sensitivity analyses.
+- `54_revision2_tabfm_shap.sh`: SHAP of the complete TabFM model with the pinned
+  TabFM source and checkpoint used by job 50.
+
+Outputs are written under `results/revision2_experiments/`.

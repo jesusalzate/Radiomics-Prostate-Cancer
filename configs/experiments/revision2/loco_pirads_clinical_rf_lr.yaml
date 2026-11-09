@@ -1,0 +1,23 @@
+train_classical:
+  csv: results/revision2_experiments/inputs/features_pirads_clinical.csv
+  data_pre: artifacts/radiomics
+  results_base: results/revision2_experiments/loco/ml/pirads_clinical
+  experiment_name: loco_pirads_clinical_rf_lr
+  feature_strategy: all
+  predefined_folds_json: results/revision_experiments/inputs/center_loco_folds.json
+  predefined_fold_id_type: sample_id
+  models:
+    - Random Forest
+    - Logistic Regression
+  classification_threshold: 0.5
+  threshold_strategy: validation_youden
+  probability_calibration: sigmoid
+  imputer_strategy: mean
+  calibration_inner_splits: 3
+  bootstrap_iterations: 1000
+  ci_level: 0.95
+  selection_cache_dir: results/revision2_experiments/shared_cache/loco
+  tune: true
+  tune_n_iter: 20
+  tune_inner_splits: 3
+  tune_search_n_jobs: 1

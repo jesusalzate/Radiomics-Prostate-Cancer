@@ -60,6 +60,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--shap_batch_size", type=int, default=1)
     parser.add_argument("--max_display", type=int, default=25)
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--checkpoint_path", default=None, help="Local TabFM checkpoint (pinned revision).")
     parser.add_argument("--n_estimators", type=int, default=32)
     parser.add_argument("--tabfm_batch_size", type=int, default=1)
     parser.add_argument("--max_num_features", type=int, default=500)
@@ -100,6 +101,15 @@ def condition_specs() -> dict[str, dict[str, str]]:
             ),
             "run_prefix": "picai1500_tabfm_clinical_only_final_5fold",
         },
+        "pirads_complete": {
+            "display_name": "Radiomics+PI-RADS+Clinical",
+            "csv": "results/pirads_experiments/inputs/features_radiomics_pirads_clinical.csv",
+            "shared_feature_folds_json": (
+                "results/pirads_experiments/inputs/feature_plan_radiomics_pirads_clinical.json"
+            ),
+            "run_prefix": "pirads_radiomics_pirads_clinical",
+            "output_dir": "results/pirads_experiments/tabfm",
+        },
     }
 
 
@@ -107,7 +117,7 @@ def make_runner_args(args: argparse.Namespace, spec: dict[str, str]) -> SimpleNa
     return SimpleNamespace(
         csv=spec["csv"],
         data_pre="artifacts/radiomics",
-        output_dir="results/radiomics/picai1500_corr/tabfm/final_5fold",
+        output_dir=spec.get("output_dir", "results/radiomics/picai1500_corr/tabfm/final_5fold"),
         run_prefix=spec["run_prefix"],
         label_column="label",
         group_column="patient_id",
@@ -247,7 +257,9 @@ def run_condition(args: argparse.Namespace, runner, condition: str, spec: dict[s
     )
     shared_features = runner.load_json(PROJECT_ROOT / runner_args.shared_feature_folds_json)
     y_all = df[runner_args.label_column].to_numpy(dtype=int)
-    model, model_metadata = runner.load_tabfm_model("pretrained", device=device, seed=runner_args.random_state)
+    model, model_metadata = runner.load_tabfm_model(
+        "pretrained", device=device, seed=runner_args.random_state, checkpoint_path=args.checkpoint_path
+    )
 
     condition_dir = Path(args.output_dir) / condition
     condition_dir.mkdir(parents=True, exist_ok=True)

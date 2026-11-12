@@ -82,7 +82,7 @@ def build(helpers, cases: list[tuple[str, str, Path]], output: Path, metadata: p
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output-dir", default="Paper/revision_R1/figures")
+    parser.add_argument("--output-dir", default="Paper/Paper_major_comm/revision_R1/figures")
     parser.add_argument("--data-root", default="/projects/ceib/data_picai")
     parser.add_argument("--crop-padding", type=int, default=8)
     args = parser.parse_args()

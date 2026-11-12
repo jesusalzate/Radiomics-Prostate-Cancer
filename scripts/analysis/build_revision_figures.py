@@ -42,7 +42,9 @@ def load_analysis_module():
 
 
 def figure3(frame: pd.DataFrame, discrimination: pd.DataFrame, out: Path) -> None:
-    plt.rcParams.update({"font.family": "DejaVu Sans", "font.size": 10, "axes.linewidth": 1.0,
+    plt.rcParams.update({"font.family": "sans-serif",
+                         "font.sans-serif": ["Arial", "Helvetica", "Liberation Sans", "DejaVu Sans"],
+                         "font.size": 10, "axes.linewidth": 1.0,
                          "axes.spines.top": True, "axes.spines.right": True})
     auc = discrimination.query("cohort == 'All cases' and center == 'All centers'").pivot(
         index="model", columns="metric", values="estimate")
@@ -212,29 +214,6 @@ def figure5(out: Path) -> None:
     plt.close(fig)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--analysis-dir", default="results/revision2_experiments/analysis")
-    parser.add_argument("--output-dir", default="Paper/revision_R1/figures")
-    args = parser.parse_args()
-    out = PROJECT_ROOT / args.output_dir
-    out.mkdir(parents=True, exist_ok=True)
-    analysis = load_analysis_module()
-    base = analysis.load_base(PROJECT_ROOT / "artifacts/data.csv")
-    five, _ = analysis.attach_sources(base, analysis.five_fold_sources())
-    loco, _ = analysis.attach_sources(base, analysis.loco_sources())
-    disc = pd.read_csv(PROJECT_ROOT / args.analysis_dir / "discrimination.csv")
-    loco_disc = pd.read_csv(PROJECT_ROOT / args.analysis_dir / "loco_discrimination.csv")
-    figure3(five, disc, out)
-    figure4(loco, loco_disc, disc, out)
-    print(f"Figures written to {out}")
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
-
-
 def figure_s9(out: Path) -> None:
     """Complete-model TabFM SHAP beeswarm, in the style of the supplementary TabFM SHAP figure."""
 
@@ -258,3 +237,41 @@ def figure_s9(out: Path) -> None:
     for ext, dpi in (("pdf", None), ("png", 600)):
         fig.savefig(out / f"figureS9_tabfm_complete_shap_R1.{ext}", dpi=dpi)
     plt.close(fig)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--analysis-dir", default="results/revision2_experiments/analysis")
+    parser.add_argument("--output-dir", default="Paper/Paper_major_comm/revision_R1/figures")
+    parser.add_argument("--main-only", action="store_true",
+                        help="Build Figures 3 and 4 only; skip Figure 5 and S9, which need "
+                             "the per-fold attribution archives.")
+    args = parser.parse_args()
+    out = PROJECT_ROOT / args.output_dir
+    out.mkdir(parents=True, exist_ok=True)
+    frames = PROJECT_ROOT / args.analysis_dir / "prediction_frames"
+    if (frames / "five_fold_predictions.csv").exists():
+        # Compact per-model out-of-fold predictions exported by revision2_analyses.py,
+        # so Figures 3 and 4 can be rebuilt without the full prediction archive.
+        five = pd.read_csv(frames / "five_fold_predictions.csv")
+        loco = pd.read_csv(frames / "loco_predictions.csv")
+    else:
+        analysis = load_analysis_module()
+        base = analysis.load_base(PROJECT_ROOT / "artifacts/data.csv")
+        five, _ = analysis.attach_sources(base, analysis.five_fold_sources())
+        loco, _ = analysis.attach_sources(base, analysis.loco_sources())
+    disc = pd.read_csv(PROJECT_ROOT / args.analysis_dir / "discrimination.csv")
+    loco_disc = pd.read_csv(PROJECT_ROOT / args.analysis_dir / "loco_discrimination.csv")
+    figure3(five, disc, out)
+    figure4(loco, loco_disc, disc, out)
+    if args.main_only:
+        print(f"Figures 3 and 4 written to {out}")
+        return 0
+    figure5(out)
+    figure_s9(out)
+    print(f"Figures written to {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
